@@ -108,8 +108,8 @@ func TestStickyMaxRequestsInvalidFallsBackWithWarning(t *testing.T) {
 			if c.Server.StickyMaxRequests != DefaultStickyMaxRequests {
 				t.Fatalf("非法值应回退为 %d，实际 %d", DefaultStickyMaxRequests, c.Server.StickyMaxRequests)
 			}
-			if !strings.Contains(logs.String(), "server.sticky_max_requests") {
-				t.Fatalf("非法值应记录明确警告，实际日志：%q", logs.String())
+			if got := logs.String(); !strings.Contains(got, "WARN config: server.sticky_max_requests=") {
+				t.Fatalf("非法值应记录可检索的 warning，实际日志：%q", got)
 			}
 			after, err := os.ReadFile(fp)
 			if err != nil {

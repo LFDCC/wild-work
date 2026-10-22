@@ -530,7 +530,7 @@ func (c *Config) normalize() error {
 		c.Server.MaxRequestBodyMB = 1024
 	}
 	if c.Server.StickyMaxRequests <= 0 {
-		log.Printf("警告：server.sticky_max_requests=%d 非法，已回退为默认值 %d",
+		log.Printf("WARN config: server.sticky_max_requests=%d invalid, fallback=%d",
 			c.Server.StickyMaxRequests, DefaultStickyMaxRequests)
 		c.Server.StickyMaxRequests = DefaultStickyMaxRequests
 	}
