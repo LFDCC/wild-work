@@ -193,7 +193,7 @@ const patched =
   // 只能在源码作用域内赋值，故由改写注入 setter 而不是靠 globalThis）。
   // ⚠️ cache 必须按 uid 建键：真实代码是 detailCache[detailState.uid]，
   //    直接塞「响应对象」会让 detailCache[uid] 为 undefined（静默走空明细分支）。
-  // 降级链别名（R125）前端即时校验：fbRules / fbAliasValidate 是 `let` 与模块内函数，
+  // 降级链别名（R127）前端即时校验：fbRules / fbAliasValidate 是 `let` 与模块内函数，
   // 由改写注入 setter + 校验入口，供「硬拒分支 + 软警告不阻止保存」的断言直接调用。
   + ", fbAliasValidate, __setFbRules: (rs) => { fbRules = rs; }"
   + ", renderCreditDetail, showCreditDetail, __setCreditDetailState: (st, resp) => { detailState = st; detailCache = { [st.uid]: resp }; }"
@@ -927,7 +927,7 @@ for (const [label, re] of uniq) {
   }
 }
 
-// ---- 降级链别名（R125）：head 行内输入框 + 只读 chip + 复制 + ? 说明 + 前端校验 ----
+// ---- 降级链别名（R127）：head 行内输入框 + 只读 chip + 复制 + ? 说明 + 前端校验 ----
 // 与上面同族：别名是「后端有字段、面板没接线」就完全不生效的功能，故把接线一并锁死。
 {
   const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");

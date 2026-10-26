@@ -45,7 +45,7 @@
 
 ---
 
-## 1. 决议项索引（R1–R126）
+## 1. 决议项索引（R1–R127）
 
 **全文（含证据链、反例、已知限制）见 [`docs/决议项.md`](docs/决议项.md)** —— 改动相关代码前必读对应条目。
 
@@ -158,6 +158,7 @@
 | R124 | **`/v1/models` 补 `supported_parameters` 与 `reasoning.mandatory`（合入外部 PR #189，作者 reno；**剔掉了本仓并未实现的 `include_reasoning`**）**（2026-10-22）：出站模型面按**已声明能力**导出 `supported_parameters`（`SupportsTools` ⇒ `tools`/`tool_choice`；有思考档位 ⇒ `reasoning`/`reasoning_effort`），`reasoning.mandatory = !*CanDisableThinking` **且仅在 `CanDisableThinking != nil` 时出现**，两者皆无 ⇒ 整个字段缺席（R49「只透传声明，绝不编造」在模型元数据面的落地）。与 PR 原样的唯一差异：`include_reasoning` 全仓**零处理点**（入站只吃 `reasoning_effort` 与 Responses 的 `reasoning` 对象）⇒ 宣告一个我们不接的参数会让客户端照它发并被静默忽略，故剔除并加护栏断言。决议号按 **R123** 从 PR 自登记的 R122 顺延。详见 [`docs/决议项.md`](docs/决议项.md) R124 |
 | R125 | **ZCode 出站 `system` 必须恰好 3 块（调用方 system 合并进第 3 块，绝不新开第 4 块）+ 补 `metadata.user_id`**（2026-10-23 实测，magpie #343 判定）：zcode 恒 `405 {"code":3012}` 的根因是上游 Start Plan 准入按「三个 system 块」判，调用方的 system 要追加进第 3 块末尾，旧实现放成独立第 4 块。修法 `buildIdentityBlocks` 合并（`block[2] = environmentSection + "\n\n" + callerSystem`，缓存断点仍只打最后一块），并在 `buildMessagesBody` 补 `metadata.user_id = {device_id, account_uuid:"", session_id:""}`（`device_id` 必须与 `X-Device-Mid` 同值；不是 3012 根因但四个参考实现全发）。详见 [`docs/决议项.md`](docs/决议项.md) R125 |
 | R126 | **OpenCodeZen 合成的 `ses_` 时间戳段必须落在「今日 −30 天」窗口内**（2026-10-25 起上游校验时间合理性）：超窗回 **429 `FreeUsageLimitError`**（与真实配额耗尽同报文，极难排障）。旧实现哈希直派生落在 1970 年代 ⇒ 必被拒。修法 `descendingTimePart(now, hash)` 显式收 `now`，哈希**只挑窗口内偏移**（30 天）、时间锚定**今日 UTC 零点**（同信号一天内稳定，保 prompt cache 亲和），末三位仍恒 `ffe`。详见 [`docs/决议项.md`](docs/决议项.md) R126 |
+| R127 | **模型降级链别名：别名是主力模型的另一个名字（入口的糖，不是链内节点）**（2026-10-22）：`ModelFallbackRule.Name` 可选（空 = 无别名，旧配置零迁移）；`config.AliasIndex` 是别名索引**唯一派生处**，Chat 入口与兼容层各持副本；优先级 **别名 > `model_map`（精确 → 通配）> `default_channel`**；三接口（Chat / Responses / Anthropic，含 `count_tokens`）全生效，保存即热生效。**三条硬边界**：① 别名**不参与备胎链**（`to` 只能写全路径、`from` 也不能写别名，否则「一次请求最多降级一次 + 不自环」失去可静态证明性）；② 别名**不为用量榜独立行**（流水/统计/请求日志一律记主力模型规范对外 ID）；③ 别名**不编造能力**（`/v1/models` 别名条目复用 `buildModelEntry` 同一份输出再换 `id`，只多 `alias` 字段、排在真实模型之前，主力渠道无账号或主力不在目录则不出现）。**接线缺口（评审重点）**：降级链热更新原先**只推内层 handler** ⇒ 新增独立 `gateway.SetAliases`（不把 `SetCompat` 撑成 5 参数；`SetCompat` 重建 Router 时继承 `Aliases`），**syncer 必须推两处** + 启动路径也带别名表。**记账与留痕**：响应体 `model`（无降级）= 别名、降级 = 备胎全路径；`X-Model-Fallback` 与降级记录 `from` = 客户端请求名（= 别名）；`app.log` 一行 `alias resolved: <别名> -> <主力全路径>`。**保存校验**（后端唯一真相）：六条硬拒（含 `/`；含空白/逗号/`*`；与另一规则重名；与 `model_map` 任何 key 重名含通配键；与渠道名重名；`to` 里写别名——此条判定须在形态校验**之前**）；空名合法；与真实裸名重合只给**软警告**（允许保存，随成功响应下发 `warnings`）；大小写敏感。未知名字与现有未知模型错误**同构**（400 + `invalid_model`），文案补「可用别名见 /v1/models 中带 alias 标记的条目」。详见 [`docs/模型降级链定义.md`](docs/模型降级链定义.md) §8 与 `docs/决议项.md` R127 |
 
 > ⚠️ **R71 附带的实测纪律**（也是 §0.1 的来源）：上游校验的是**头族齐全**而非单点
 > （只补 `X-Conversation-ID` 仍被拒）；且 `X-Conversation-ID` 的**取值形态不被校验**
@@ -438,7 +439,7 @@ bash scripts/probe-dump.sh summarize                # 汇总各渠道 usage 字�
 | [README.md](README.md) | 用户文档 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发者文档（面向 AI Agent） |
 | [AGENTS.md](AGENTS.md) | **本文件**：纪律 + 决议索引 + 关键不变量 + 构建发版 |
-| [docs/决议项.md](docs/决议项.md) | **R1–R126 决议全文**（证据链、反例、已知限制） |
+| [docs/决议项.md](docs/决议项.md) | **R1–R127 决议全文**（证据链、反例、已知限制） |
 | [docs/渠道接入备忘.md](docs/渠道接入备忘.md) | 各渠道协议要点、凭据模型、已知限制与踩坑 |
 | [docs/接口参考.md](docs/接口参考.md) | 面板区块规划 + 管理 API 全量清单 |
 | [docs/模型降级链定义.md](docs/模型降级链定义.md) | **模型降级链的唯一权威定义**：三维归因、错误类型全量归属、两条触发路径、三条硬规则、已知限制（R94） |

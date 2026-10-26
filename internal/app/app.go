@@ -2882,10 +2882,10 @@ func (a *App) SetModelFallbackSyncer(fn func(rules []config.ModelFallbackRule)) 
 //
 // 校验（后端是**唯一真相**，前端同一套校验只为即时反馈）：
 //   - From/To 均须 "channel/model" 全路径；From 全局唯一；每链 To 至少一项、不含 From 自身
-//   - Name（别名，R125）可选，空串 = 无别名；非空时按 validateAliases 的硬拒矩阵逐条拦下
+//   - Name（别名，R127）可选，空串 = 无别名；非空时按 validateAliases 的硬拒矩阵逐条拦下
 //
 // 返回的 warnings 是**软警告**（允许保存）：目前只有「别名与当前模型列表的某个裸名重合」。
-// 空规则列表 = 清空禁用。保存即热生效（fbSyncer 推内层 handler 与兼容层，R125）。
+// 空规则列表 = 清空禁用。保存即热生效（fbSyncer 推内层 handler 与兼容层，R127）。
 func (a *App) SetModelFallback(rules []config.ModelFallbackRule) ([]string, error) {
 	// 别名索引先建：下面校验 To 时要靠它识别「备胎里写了别名」。
 	// 形态类硬拒（含 / 、空白/逗号/*、重名）仍由 validateAliases 统一点名，
@@ -2961,7 +2961,7 @@ func (a *App) SetModelFallback(rules []config.ModelFallbackRule) ([]string, erro
 	return warns, nil
 }
 
-// validateAliases 校验降级链别名（R125）。硬拒返回错误（文案点名哪条规则的哪个名字）；
+// validateAliases 校验降级链别名（R127）。硬拒返回错误（文案点名哪条规则的哪个名字）；
 // 软警告返回字符串列表（**不阻止保存**，只告知歧义）。
 //
 // 六条硬拒：① 含 `/`；② 含空白/逗号/`*`；③ 与其他规则的 Name 重名；

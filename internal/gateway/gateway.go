@@ -88,7 +88,7 @@ func (g *Gateway) withRouter(fn func(rt *Router)) {
 // 面板保存 compat 时调用；不刷新的话新映射要到下次重启才生效。
 // channels 用于校验映射目标的渠道前缀，调用方应传入当前已接入渠道。
 //
-// 注意：本方法**不碰**别名表（R125）。别名表有独立的 SetAliases——把一个已经 4 个
+// 注意：本方法**不碰**别名表（R127）。别名表有独立的 SetAliases——把一个已经 4 个
 // 参数的函数撑成 5 个，会让「哪条保存路径负责推什么」变得难以核对；分开后
 // 漏推一处就是「Chat 能用别名、Codex 不能」的静默缺陷，而那种缺陷很容易漏测。
 func (g *Gateway) SetCompat(defaultChannel string, maxTokensCap int, modelMap map[string]string, channels []string) {
@@ -106,7 +106,7 @@ func (g *Gateway) SetCompat(defaultChannel string, maxTokensCap int, modelMap ma
 	g.mu.Unlock()
 }
 
-// SetAliases 热更新降级链别名表（R125）：面板保存降级链后由装配层推一份副本。
+// SetAliases 热更新降级链别名表（R127）：面板保存降级链后由装配层推一份副本。
 //
 // 与 SetCompat 分开的原因见上：保存降级链只该动别名表，保存 compat 只该动路由表，
 // 两条热更新通道互不覆盖（否则「先存别名、后存 model_map」会把别名表刷回启动快照）。

@@ -1,4 +1,4 @@
-// 降级链别名（R125）在兼容层三条路径上的行为锁定：
+// 降级链别名（R127）在兼容层三条路径上的行为锁定：
 //   - 别名 > compat.model_map（精确 → 通配）> compat.default_channel
 //   - /v1/responses、/v1/messages、/v1/messages/count_tokens 三处一致
 //   - 别名表热更新后立即生效（不必重启）

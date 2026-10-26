@@ -37,7 +37,13 @@
   },
   "backup_proxy": "",
   "reasoning_efforts": {},
-  "model_fallback": [],
+  "model_fallback": [
+    {
+      "from": "workbuddyai/deepseek-v4.1-flash",
+      "to": ["workbuddy/glm-5.2"],
+      "name": "fast"
+    }
+  ],
   "custom_channels": [],
   "features": {
     "loop_guard": true

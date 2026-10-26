@@ -133,7 +133,7 @@ type Handler struct {
 	fbMu      sync.RWMutex               // 保护 fallbacks（面板可运行时修改）
 	fallbacks []config.ModelFallbackRule // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
 	// aliases 是 fallbacks 的派生索引（别名 → 主力模型全路径），与 fallbacks 同锁同寿命：
-	// 任何写入 fallbacks 的地方都必须经 setFallbacks 重建，避免两份状态漂移（R125）。
+	// 任何写入 fallbacks 的地方都必须经 setFallbacks 重建，避免两份状态漂移（R127）。
 	aliases map[string]string
 
 	efMu    sync.RWMutex      // 保护 efforts（面板可运行时修改）
@@ -168,7 +168,7 @@ func (h *Handler) SetModelFallbacks(rules []config.ModelFallbackRule) {
 }
 
 // setFallbacks 是 fallbacks 的唯一写入点：规则与别名索引在同一把锁内一起换，
-// 派生只走 config.AliasIndex（单一来源，R125）。
+// 派生只走 config.AliasIndex（单一来源，R127）。
 func (h *Handler) setFallbacks(rules []config.ModelFallbackRule) {
 	idx := config.AliasIndex(rules)
 	h.fbMu.Lock()
@@ -248,7 +248,7 @@ func NewHandler(cfg Config) *Handler {
 		MaxRequestBody = cfg.MaxRequestBody
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats, fallbacks: cfg.ModelFallbacks, efforts: cfg.ReasoningEfforts}
-	h.aliases = config.AliasIndex(cfg.ModelFallbacks) // 别名索引与规则同源派生（R125）
+	h.aliases = config.AliasIndex(cfg.ModelFallbacks) // 别名索引与规则同源派生（R127）
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("POST /v1/images/generations", h.withAuth(h.imagesGenerations))
 	h.mux.HandleFunc("POST /v1/images/edits", h.withAuth(h.imagesEdits))
@@ -450,7 +450,7 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 
 // modelList 构造 /v1/models 的 data 数组。
 //
-// 别名条目（R125）**排在真实模型之前**，每次请求现拼、不进上游目录缓存：
+// 别名条目（R127）**排在真实模型之前**，每次请求现拼、不进上游目录缓存：
 // 别名表随降级链热更新即时生效，无需任何缓存失效通道。
 // 能力字段**逐字段继承主力模型**（不新增任何推断），另带一个 alias 字段指向主力全路径。
 // 沿用现有过滤：主力所在渠道未接入任何账号时该别名不出现。
@@ -667,7 +667,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// clientModel = 客户端请求的原始模型名（可能是别名），用于回填响应体 model 字段、
 	// X-Model-Fallback 头与降级记录事件——那几处的语义是「客户端视角发了什么名字」。
 	clientModel := peek.Model
-	// 别名解析（R125）：别名是主力模型的另一个名字，命中即等价于请求主力模型。
+	// 别名解析（R127）：别名是主力模型的另一个名字，命中即等价于请求主力模型。
 	// 只在这里解析一次，reqModel 是后续一切（路由 / 容量判定 / 降级链 / 记账 / 档位）的输入。
 	reqModel := h.resolveAlias(clientModel)
 	rt, model, err := h.runtimeForModel(reqModel)
@@ -683,7 +683,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 统计/流水的归一 ID：新旧写法（cline-free/x 与 cline/cline-free/x）归一到同一串，
 	// 否则同一模型会在用量榜/请求日志里裂成两行（R59）；其余渠道为恒等变换。
 	// 别名已在上面解析成主力全路径，故记账记的是**主力模型的规范对外 ID**，
-	// 用量榜永远不会出现别名（R125「账本完全透明」）。
+	// 用量榜永远不会出现别名（R127「账本完全透明」）。
 	canonModel := provider.CanonicalModelID(reqModel)
 	// 模型降级链：请求模型在本渠道已无账号可承载（no_healthy_account 的两种形态——
 	// 「模型全冷」或「整渠道全灭」，pickWithSticky 必败）时，按用户配置的链找第一个
@@ -1403,7 +1403,7 @@ func keyPasteChannel(k provider.Kind) bool { return k == provider.Cline }
 
 // aliasHint 拼给「未知模型名」错误的可行动提示（未配置别名时为空串，不产生噪声）。
 // 别名是裸名（不含 `/`），所以只会在「没写渠道前缀」这一分支上被需要——
-// 让用户知道「打错别名」与「忘了写前缀」可以去 /v1/models 自查（R125）。
+// 让用户知道「打错别名」与「忘了写前缀」可以去 /v1/models 自查（R127）。
 func (h *Handler) aliasHint() string {
 	h.fbMu.RLock()
 	n := len(h.aliases)

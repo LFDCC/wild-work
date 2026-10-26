@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// 本测试锁一个**真实存在的接线缺口**（R125 / 工单 03）：
+// 本测试锁一个**真实存在的接线缺口**（R127）：
 //
 //	降级链保存的热更新闭包原先只推内层 handler（inner.SetModelFallbacks），
 //	兼容层（/v1/responses、/v1/messages）的别名表从未被推过。
