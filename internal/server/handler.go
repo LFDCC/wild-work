@@ -448,8 +448,15 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.modelList()})
 }
 
+// modelList 构造 /v1/models 的 data 数组。
+//
+// 别名条目（R125）**排在真实模型之前**，每次请求现拼、不进上游目录缓存：
+// 别名表随降级链热更新即时生效，无需任何缓存失效通道。
+// 能力字段**逐字段继承主力模型**（不新增任何推断），另带一个 alias 字段指向主力全路径。
+// 沿用现有过滤：主力所在渠道未接入任何账号时该别名不出现。
 func (h *Handler) modelList() []map[string]any {
 	out := []map[string]any{}
+	out = append(out, h.aliasModelEntries()...)
 	for _, k := range h.runtimeKinds() {
 		rt := h.getRuntime(k)
 		if rt == nil || rt.Pool == nil || len(rt.Pool.List()) == 0 { // 只暴露已接入账号的平台
@@ -462,6 +469,50 @@ func (h *Handler) modelList() []map[string]any {
 		for _, mi := range infos {
 			out = append(out, buildModelEntry(k, mi))
 		}
+	}
+	return out
+}
+
+// aliasModelEntries 把别名表现拼成 /v1/models 条目（按降级链配置顺序）。
+//
+// 只做两件事：① 找到主力模型的 ModelInfo（找不到 = 主力所在渠道没接入账号 / 模型不在目录里
+// ⇒ 整个条目不出现，沿用现有过滤口径）；② 拿 buildModelEntry 的**同一份输出**换掉 id
+// 并加 alias 字段。为什么不另写一份能力拼装：那等于给能力字段开第二个来源，
+// 迟早与真实模型条目漂移（R49「不编造」+ 单一来源）。
+func (h *Handler) aliasModelEntries() []map[string]any {
+	pairs := h.aliasEntries()
+	if len(pairs) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(pairs))
+	for _, p := range pairs {
+		name, target := p[0], p[1]
+		kind, upstream, ok := provider.SplitModelID(target)
+		if !ok {
+			continue
+		}
+		rt := h.getRuntime(kind)
+		if rt == nil || rt.Pool == nil || len(rt.Pool.List()) == 0 {
+			continue // 主力渠道没接入账号：别名不出现
+		}
+		infos := h.fetchRuntimeModels(rt)
+		if len(infos) == 0 {
+			infos = rt.StaticModels
+		}
+		var found *provider.ModelInfo
+		for i := range infos {
+			if infos[i].ID == upstream {
+				found = &infos[i]
+				break
+			}
+		}
+		if found == nil {
+			continue // 主力模型不在当前目录：不凭空造一条条目
+		}
+		entry := buildModelEntry(kind, *found)
+		entry["id"] = name
+		entry["alias"] = target
+		out = append(out, entry)
 	}
 	return out
 }
