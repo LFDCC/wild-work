@@ -132,6 +132,9 @@ type Handler struct {
 
 	fbMu      sync.RWMutex               // 保护 fallbacks（面板可运行时修改）
 	fallbacks []config.ModelFallbackRule // 模型降级链（cfg.ModelFallbacks 初始，热更新经 SetModelFallbacks）
+	// aliases 是 fallbacks 的派生索引（别名 → 主力模型全路径），与 fallbacks 同锁同寿命：
+	// 任何写入 fallbacks 的地方都必须经 setFallbacks 重建，避免两份状态漂移（R125）。
+	aliases map[string]string
 
 	efMu    sync.RWMutex      // 保护 efforts（面板可运行时修改）
 	efforts map[string]string // 思考强度注入映射（cfg.ReasoningEfforts 初始，热更新经 SetReasoningEfforts）
@@ -161,9 +164,56 @@ func (h *Handler) getRuntime(k provider.Kind) *Runtime {
 
 // SetModelFallbacks 热更新模型降级链（面板保存后由 app 层回调；nil/空 = 清空禁用）。
 func (h *Handler) SetModelFallbacks(rules []config.ModelFallbackRule) {
+	h.setFallbacks(rules)
+}
+
+// setFallbacks 是 fallbacks 的唯一写入点：规则与别名索引在同一把锁内一起换，
+// 派生只走 config.AliasIndex（单一来源，R125）。
+func (h *Handler) setFallbacks(rules []config.ModelFallbackRule) {
+	idx := config.AliasIndex(rules)
 	h.fbMu.Lock()
 	h.fallbacks = rules
+	h.aliases = idx
 	h.fbMu.Unlock()
+}
+
+// resolveAlias 把客户端请求名解析为别名指向的主力模型全路径。
+// 命中时打一行 `alias resolved:` 日志（别名可观测性），未命中原样返回。
+// 别名只在入口解析：解析结果就是后续一切行为（路由/容量/降级/记账）的输入。
+func (h *Handler) resolveAlias(model string) string {
+	m := strings.TrimSpace(model)
+	if m == "" {
+		return model
+	}
+	h.fbMu.RLock()
+	target, ok := h.aliases[m]
+	h.fbMu.RUnlock()
+	if !ok || target == "" {
+		return model
+	}
+	log.Printf("alias resolved: %s -> %s", m, target)
+	return target
+}
+
+// aliasTarget 返回别名指向的主力模型全路径（无别名返回空串），供 /v1/models 现拼条目用。
+func (h *Handler) aliasTarget(name string) string {
+	h.fbMu.RLock()
+	defer h.fbMu.RUnlock()
+	return h.aliases[strings.TrimSpace(name)]
+}
+
+// aliasEntries 返回按配置顺序排列的「别名 → 主力模型」对（给 /v1/models 现拼条目用）。
+func (h *Handler) aliasEntries() [][2]string {
+	h.fbMu.RLock()
+	defer h.fbMu.RUnlock()
+	out := make([][2]string, 0, len(h.aliases))
+	for _, rule := range h.fallbacks {
+		name := strings.TrimSpace(rule.Name)
+		if target, ok := h.aliases[name]; ok && target != "" {
+			out = append(out, [2]string{name, target})
+		}
+	}
+	return out
 }
 
 // SetReasoningEfforts 热更新思考强度注入映射（面板保存后由 app 层回调；nil/空 = 清空禁用）。
@@ -198,6 +248,7 @@ func NewHandler(cfg Config) *Handler {
 		MaxRequestBody = cfg.MaxRequestBody
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry), ledger: cfg.Ledger, stats: cfg.Stats, fallbacks: cfg.ModelFallbacks, efforts: cfg.ReasoningEfforts}
+	h.aliases = config.AliasIndex(cfg.ModelFallbacks) // 别名索引与规则同源派生（R125）
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("POST /v1/images/generations", h.withAuth(h.imagesGenerations))
 	h.mux.HandleFunc("POST /v1/images/edits", h.withAuth(h.imagesEdits))
@@ -562,12 +613,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
 		return
 	}
-	rt, model, err := h.runtimeForModel(peek.Model)
+	// clientModel = 客户端请求的原始模型名（可能是别名），用于回填响应体 model 字段、
+	// X-Model-Fallback 头与降级记录事件——那几处的语义是「客户端视角发了什么名字」。
+	clientModel := peek.Model
+	// 别名解析（R125）：别名是主力模型的另一个名字，命中即等价于请求主力模型。
+	// 只在这里解析一次，reqModel 是后续一切（路由 / 容量判定 / 降级链 / 记账 / 档位）的输入。
+	reqModel := h.resolveAlias(clientModel)
+	rt, model, err := h.runtimeForModel(reqModel)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_model", err.Error())
 		return
 	}
-	clientModel := peek.Model // 客户端请求的原始模型名（含 channel/ 前缀），回填进响应
 	// 诊断：记录上下文构成摘要（config.body_log 关闭时立即返回，无实际开销）。
 	// 必须放在 rewriteModel 之前——要记的是客户端发来的原始体，而非改写后的。
 	if h.ledger != nil {
@@ -575,7 +631,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	// 统计/流水的归一 ID：新旧写法（cline-free/x 与 cline/cline-free/x）归一到同一串，
 	// 否则同一模型会在用量榜/请求日志里裂成两行（R59）；其余渠道为恒等变换。
-	canonModel := provider.CanonicalModelID(clientModel)
+	// 别名已在上面解析成主力全路径，故记账记的是**主力模型的规范对外 ID**，
+	// 用量榜永远不会出现别名（R125「账本完全透明」）。
+	canonModel := provider.CanonicalModelID(reqModel)
 	// 模型降级链：请求模型在本渠道已无账号可承载（no_healthy_account 的两种形态——
 	// 「模型全冷」或「整渠道全灭」，pickWithSticky 必败）时，按用户配置的链找第一个
 	// 仍有可用账号的备胎模型顶上；备胎可跨渠道，渠道全灭时不至于直接 503。
@@ -626,7 +684,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 思考强度注入：客户端未传 reasoning_effort 且面板配置命中（按客户端请求模型 ID 匹配，
 	// 含 `*` 全局默认）时补上档位。未配置 = 零开销直通（applyEffort 内部快检）；
 	// 注入失败仅记日志、原 body 照发，绝不因此中断请求。
-	body = h.applyEffort(body, clientModel)
+	body = h.applyEffort(body, reqModel)
 
 	// 运行统计插桩：每客户端请求一行（最终结果；中间换号尝试不逐行——对齐 sidecar 口径）。
 	// TTFB 由 statWriter 记首字节，耗时/吞吐在出口由 defer 收口；
@@ -697,7 +755,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						// 改写成功才发——失败走透传时不得残留降级头（S1）。
 						w.Header().Set("X-Model-Fallback", clientModel+" -> "+fb2)
 						body = nb
-						body = h.applyEffort(body, clientModel) // 与入口同参数；键已存在不碰（双注入守卫）
+						body = h.applyEffort(body, reqModel) // 与入口同参数；键已存在不碰（双注入守卫）
 						rt, model = rt2, m2
 						dispModel = fb2
 						acctModel = provider.CanonicalModelID(fb2) // 记账归属=备胎（0021/PR #148 口径）
@@ -1292,12 +1350,25 @@ func noLoginChannel(k provider.Kind) bool { return k == provider.Oczen || k == p
 // cline 的官方 API Key 不过期、不轮换，被禁用只会是 Key 本身无效/被删。
 func keyPasteChannel(k provider.Kind) bool { return k == provider.Cline }
 
+// aliasHint 拼给「未知模型名」错误的可行动提示（未配置别名时为空串，不产生噪声）。
+// 别名是裸名（不含 `/`），所以只会在「没写渠道前缀」这一分支上被需要——
+// 让用户知道「打错别名」与「忘了写前缀」可以去 /v1/models 自查（R125）。
+func (h *Handler) aliasHint() string {
+	h.fbMu.RLock()
+	n := len(h.aliases)
+	h.fbMu.RUnlock()
+	if n == 0 {
+		return ""
+	}
+	return "（可用别名见 /v1/models 中带 alias 标记的条目）"
+}
+
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	// 解析与 provider.PublicModelID 同源：既接受 `<渠道>/<上游ID>`，也接受上游 ID 自带命名空间的
 	// 直通形态（`cline-free/*`）——后者首段不是渠道名，必须整串当上游模型名（决议 R59）。
 	kind, upstream, ok := provider.SplitModelID(model)
 	if !ok {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model> / kilo/<model> / minimax/<model> / lobsterai/<model> / zcode/<model> / gemini/<model> / codearts/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）")
+		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / workbuddyai/<model> / traework/<model> / qoder/<model> / qodercn/<model> / qodercom/<model> / qwenwork/<model> / glm/<model> / oczen/<model> / kilo/<model> / minimax/<model> / lobsterai/<model> / zcode/<model> / gemini/<model> / codearts/<model>；Cline 免费池直接用上游 ID（cline-free/<model>）%s", h.aliasHint())
 	}
 	rt := h.getRuntime(kind)
 	if rt == nil || rt.Pool == nil || rt.Upstream == nil {

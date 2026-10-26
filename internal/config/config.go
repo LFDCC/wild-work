@@ -243,9 +243,55 @@ type Config struct {
 // ModelFallbackRule 单条模型降级规则：From（"channel/model" 全路径）在其渠道内
 // 全部账号上限流冷却时，按 To 顺序找第一个仍有可用账号的备胎模型顶上。
 // 约束：From 全局唯一；To 内不含 From（不自环）；To 至少一项。
+//
+// Name 是这条链的**可选别名**（R125）：别名是主力模型（From）的另一个名字，
+// 客户端请求别名等同于请求 From——同样的粘性路由、容量判定、降级链与冷却。
+// 别名只在**入口**解析，不参与备胎链（To 里不得写别名，From 也不得写别名）；
+// 空串 = 无别名（旧配置零迁移）。生命周期绑定规则：删规则别名一起消失，
+// 改 From 别名自动跟随（无需任何级联改写）。
 type ModelFallbackRule struct {
 	From string   `json:"from"`
 	To   []string `json:"to"`
+	Name string   `json:"name,omitempty"`
+}
+
+// AliasIndex 从降级链规则列表派生「别名 → 主力模型全路径」索引。
+//
+// **单一来源**：内层 handler（Chat）与兼容层（Responses/Anthropic）各自持有该 map 的
+// 副本，但派生只在这里发生一次，避免两边各写一套清洗逻辑而漂移（R125）。
+//
+// 跳过不合规的名字（保存时已硬拒，这里再兜底一次——手改 config.json 造出的脏数据
+// 不得导致崩溃或误路由）：空名、含 `/`、含空白/逗号/`*`、以及重复别名（先到先得）。
+func AliasIndex(rules []ModelFallbackRule) map[string]string {
+	out := map[string]string{}
+	for _, r := range rules {
+		name := strings.TrimSpace(r.Name)
+		if !ValidAliasName(name) {
+			continue
+		}
+		from := strings.TrimSpace(r.From)
+		if from == "" {
+			continue
+		}
+		if _, dup := out[name]; dup {
+			continue
+		}
+		out[name] = from
+	}
+	return out
+}
+
+// ValidAliasName 报告 name 是否是可用的别名（空串 = 无别名，也返回 false）。
+// 规则：不含 `/`（避免与 channel/model 前缀语义打架）、不含空白、逗号、`*`
+// （避免输入框里被切碎 / 与 model_map 通配语义混淆）。大小写敏感（R125）。
+func ValidAliasName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.ContainsAny(name, "/ \t\r\n,*\u3000\uff0c") {
+		return false
+	}
+	return true
 }
 
 // Default 默认配置。

@@ -2358,10 +2358,12 @@ function renderFbList() {
     return `<div class="fb-rule-card">
       <div class="fb-rule-head">
         <span class="fb-rule-badge">规则 ${i + 1}</span>
+        <input class="input fb-name-edit" data-name-idx="${i}" value="${esc(r.name || "")}" spellcheck="false" maxlength="64" title="别名（可选）：主力模型的另一个名字，客户端请求它等同于请求主力模型。大小写敏感，不能含 / 、空白、逗号、*" placeholder="别名（可选，如 fast）">
         <span class="pk-wrap fb-from-wrap"><input class="input fb-from-edit" data-edit-idx="${i}" value="${esc(r.from)}" spellcheck="false" title="主力模型ID（channel/model，可编辑；失焦或回车确认，点「保存降级链」生效）" placeholder="主力模型ID（channel/model）"></span>
         <button class="icon-btn" data-del-rule="${i}" title="删除整条规则">🗑</button>
       </div>
       <div class="fb-rule-body">
+        ${r.name ? `<div class="fb-alias-chip"><span class="fb-alias-txt">别名 <code>${esc(r.name)}</code> · 客户端可直接请求</span><button class="icon-btn fb-alias-copy" data-copy-alias="${i}" title="复制别名到剪贴板">复制</button></div>` : ""}
         <div class="fb-chips">${tos || `<span class="hint">（无备胎）</span>`}</div>
         <div class="row" style="margin-top:2px">
           <span class="pk-wrap grow"><input class="input fb-to-add" data-add-idx="${i}" spellcheck="false" placeholder="＋ 备胎模型ID（模糊搜索 / 回车添加 / 逗号分隔多个）"></span>
@@ -2374,6 +2376,7 @@ function renderFbList() {
   $("fbErr").textContent = "";
   attachFbPickers();
   updateFbDirty();
+  updateFbAliasWarn();
 }
 
 // parseModelList 解析备胎输入：逗号/空格/换行分隔多个 channel/model，本地形态校验。
@@ -2414,9 +2417,44 @@ function attachFbPickers() {
   }
 }
 
+// fbAliasValidate 别名即时校验（前端只为即时反馈，后端 SetModelFallback 才是唯一真相）。
+// 返回 [硬错误文案, 软警告文案]：硬错误阻止保存；软警告（与真实模型裸名重合）只提示。
+// 规则与后端同源（config.ValidAliasName）：不含 / 、空白、逗号、*；大小写敏感。
+function fbAliasValidate() {
+  const names = {};
+  const mapKeys = Object.keys((state.compat && state.compat.model_map) || {});
+  const channels = new Set(((state.compat && state.compat.channels) || []).concat(Array.from(RESERVED_CHANNEL_NAMES)));
+  const bareNames = new Set(collectAllModels().map((x) => x.short));
+  const warns = [];
+  for (let i = 0; i < fbRules.length; i++) {
+    const nm = String(fbRules[i].name || "").trim();
+    if (!nm) continue;
+    const where = `规则 ${i + 1} 的别名 ${nm}`;
+    if (nm.includes("/")) return [`${where} 不能含 /（别名是裸名，不是 channel/model 形式）`, ""];
+    if (/[\s,*，　]/.test(nm)) return [`${where} 不能含空白、逗号或 *`, ""];
+    if (names[nm]) return [`${where} 与${names[nm]}重名（别名不可重复，大小写敏感：Fast ≠ fast）`, ""];
+    names[nm] = `规则 ${i + 1} `;
+    if (mapKeys.includes(nm)) return [`${where} 与 compat.model_map 的键重名（别名优先，但同名会造出「有时走映射、有时走别名」的幽灵行为）`, ""];
+    if (channels.has(nm)) return [`${where} 与渠道名重名（会搅乱前缀解析）`, ""];
+    if (bareNames.has(nm)) warns.push(`别名 ${nm} 与某个真实模型的裸名重合：运行时按别名走（别名优先于 model_map / default_channel）`);
+  }
+  return ["", warns.join("；")];
+}
+
+// updateFbAliasWarn 把软警告渲染到黄字提示行（不阻止保存）。
+function updateFbAliasWarn() {
+  const el = $("fbAliasWarn");
+  if (!el) return;
+  const [, warn] = fbAliasValidate();
+  el.textContent = warn ? "⚠ " + warn : "";
+  el.style.display = warn ? "" : "none";
+}
+
 async function saveModelFallback() {
   try {
     fbSanitize(); // 落盘前互斥兜底（正常路径 renderFbList 已清洗过，防御未来路径）
+    const [hardErr] = fbAliasValidate();
+    if (hardErr) { $("fbErr").textContent = hardErr; return; } // 前端即时反馈（后端仍独立判定）
     await api("/api/config/model_fallback", { rules: fbRules });
     toast("降级链已保存（热生效）");
     $("fbErr").textContent = "";
@@ -3526,12 +3564,18 @@ function bind() {
     const kept = tos.filter((t) => !fsx[t]);
     if (kept.length === 0) { $("fbErr").textContent = "备胎均与主力模型互斥（含新主力自身），请更换备胎"; return; }
     if (kept.length < tos.length) toast(`已剔除 ${tos.length - kept.length} 个与主力模型互斥的备胎`);
-    fbRules.push({ from, to: kept });
+    fbRules.push({ from, to: kept, name: "" });
     $("fbFromInput").value = ""; $("fbToInput").value = "";
     renderFbList(); // 内部先 fbSanitize：互斥兜底（预过滤后此处不再剔除）
   };
   $("btnFbSave").onclick = saveModelFallback;
   $("fbList").addEventListener("click", async (e) => {
+    const copyAlias = e.target.closest("[data-copy-alias]");
+    if (copyAlias) {
+      const r = fbRules[+copyAlias.dataset.copyAlias];
+      if (r && r.name) copyText(r.name, "别名");
+      return;
+    }
     const addBtn = e.target.closest("[data-add-to]");
     if (addBtn) {
       const i = +addBtn.dataset.addTo;
@@ -3581,6 +3625,21 @@ function bind() {
     if (fbRules.some((r, k) => k !== i && r.from === from)) { $("fbErr").textContent = `主模型 ${from} 已有规则（每个主模型只允许一条）`; e.target.value = cur; return; }
     fbRules[i].from = from;
     fbRules[i].to = fbRules[i].to.filter((t) => t !== from);
+    renderFbList();
+  });
+  // 行内别名编辑：change（失焦/回车）提交——非法则回滚输入框并报错，合法写回编辑态。
+  // 校验口径与后端同源；重名/与 model_map 或渠道名冲突等硬拒只在保存时由后端点名。
+  $("fbList").addEventListener("change", (e) => {
+    if (!e.target.classList.contains("fb-name-edit")) return;
+    const i = +e.target.dataset.nameIdx;
+    const nm = String(e.target.value || "").trim();
+    if (!nm) { fbRules[i].name = ""; renderFbList(); return; }
+    if (nm.includes("/") || /[\s,*，　]/.test(nm)) {
+      $("fbErr").textContent = `别名 ${nm} 不能含 / 、空白、逗号或 *（大小写敏感：Fast ≠ fast）`;
+      e.target.value = fbRules[i].name || "";
+      return;
+    }
+    fbRules[i].name = nm;
     renderFbList();
   });
   // 备胎 chip 拖拽排序（委托在 #fbList；仅同规则内拖动）。drop 后就地 splice fbRules[i].to

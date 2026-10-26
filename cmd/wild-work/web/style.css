@@ -1619,6 +1619,16 @@ select.input::-ms-expand, .select::-ms-expand { display: none; }
 }
 .fb-rule-head .pk-wrap { flex: 1 1 320px; }
 .fb-rule-head .pk-wrap > input { width: 100%; box-sizing: border-box; }
+/* 别名输入框：窄宽度、不换行占位（R87/R88 对齐纪律 + R90 不额外占行） */
+.fb-rule-head .fb-name-edit { flex: 0 1 150px; min-width: 110px; font-family: ui-monospace, Consolas, monospace; }
+/* 只读别名 chip：确认「这个名字客户端可直接请求」+ 复制按钮；无别名时整块不渲染 */
+.fb-alias-chip {
+  display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  font-size: 12px; color: var(--muted);
+}
+.fb-alias-chip .fb-alias-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fb-alias-chip code { font-family: ui-monospace, Consolas, monospace; color: var(--primary); }
+.fb-alias-chip .fb-alias-copy { flex: none; margin-left: auto; }
 .fb-rule-body .pk-wrap { flex: 1 1 auto; }
 .fb-rule-body .pk-wrap > input { width: 100%; box-sizing: border-box; }
 .fb-rule-body { margin-top: 6px; }

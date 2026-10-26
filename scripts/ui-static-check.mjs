@@ -924,6 +924,42 @@ for (const [label, re] of uniq) {
   }
 }
 
+// ---- 降级链别名（R125）：head 行内输入框 + 只读 chip + 复制 + ? 说明 + 前端校验 ----
+// 与上面同族：别名是「后端有字段、面板没接线」就完全不生效的功能，故把接线一并锁死。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const need = [
+    // 输入框必须在规则 head 行内（不额外占一行）——渲染模板里 .fb-rule-head 内出现 fb-name-edit
+    ["别名输入框渲染在规则 head 行内（不额外占行）",
+      /class="fb-rule-head">[\s\S]{0,600}fb-name-edit[\s\S]{0,400}fb-from-edit/.test(raw)],
+    ["别名输入框带 data-name-idx 与可选占位提示",
+      raw.includes("data-name-idx=") && raw.includes("别名（可选，如 fast）")],
+    ["卡片正文有只读别名 chip（「客户端可直接请求」）",
+      raw.includes("fb-alias-chip") && raw.includes("客户端可直接请求")],
+    ["chip 带复制按钮且接线到 copyText",
+      raw.includes("data-copy-alias") && /data-copy-alias\][\s\S]{0,200}copyText\(/.test(raw)],
+    ["无别名时 chip 不渲染（条件模板）",
+      /\$\{r\.name \?/.test(raw)],
+    ["? 说明写明别名语义（等同于主力模型 + 不参与备胎链 + 大小写敏感）",
+      html.includes("别名</b>是主力模型的另一个名字") && html.includes("别名不参与备胎链")
+      && html.includes("大小写敏感")],
+    ["别名输入框 change 提交接线（校验 + 回滚）",
+      raw.includes('classList.contains("fb-name-edit")') && raw.includes("不能含 / 、空白、逗号或 *")],
+    ["前端即时校验覆盖硬拒分支（斜杠 / 空白逗号星号 / 重名 / model_map / 渠道名）",
+      raw.includes("function fbAliasValidate()") && raw.includes("compat.model_map 的键重名")
+      && raw.includes("与渠道名重名") && raw.includes("别名不可重复")],
+    ["软警告（与真实裸名重合）只提示、不阻止保存",
+      html.includes('id="fbAliasWarn"') && /bareNames\.has\(nm\)[\s\S]{0,120}warns\.push/.test(raw)
+      && /const \[hardErr\] = fbAliasValidate\(\);[\s\S]{0,120}if \(hardErr\)/.test(raw)],
+    ["保存后端硬拒别名含 /（唯一真相在服务端）",
+      readFileSync(new URL("../internal/app/app.go", import.meta.url), "utf8").includes("不能含 /（别名是裸名")],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
 // ---- 思考强度注入（issue #96）：设置弹层接线与三态语义文案 ----
 // 与降级链同族：「后端有端点、面板没接线」不报错不崩溃，只表现为配不了
 // 档位 / 配了不生效，故把编辑区、建议集与接线一并锁死。

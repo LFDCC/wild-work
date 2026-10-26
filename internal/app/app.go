@@ -2880,12 +2880,18 @@ func (a *App) SetModelFallbackSyncer(fn func(rules []config.ModelFallbackRule)) 
 
 // SetModelFallback 保存模型降级链（设置面板可视化编辑）。
 // 校验：From/To 均须 "channel/model" 全路径；From 全局唯一；每链 To 至少一项、
-// 不含 From 自身（不自环）；空规则列表 = 清空禁用。保存即热生效（fbSyncer）。
+// 不含 From 自身（不自环）；Name（别名）可选，空串 = 无别名，不得含 `/`
+// （别名是裸名，带斜杠会与 channel/model 前缀语义打架）。空规则列表 = 清空禁用。
+// 保存即热生效（fbSyncer 推内层 handler 与兼容层，R125）。
 func (a *App) SetModelFallback(rules []config.ModelFallbackRule) error {
 	seen := map[string]bool{}
 	for i := range rules {
 		r := &rules[i]
 		r.From = strings.TrimSpace(r.From)
+		r.Name = strings.TrimSpace(r.Name)
+		if strings.Contains(r.Name, "/") {
+			return fmt.Errorf("规则 %d 的别名 %q 不能含 /（别名是裸名，不是 channel/model 形式）", i+1, r.Name)
+		}
 		if strings.Index(r.From, "/") <= 0 {
 			return fmt.Errorf("规则 %d 的主模型 %q 需为 channel/model 形式", i+1, r.From)
 		}
