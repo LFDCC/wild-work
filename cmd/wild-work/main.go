@@ -721,6 +721,9 @@ func main() {
 			Default:  cfg.Compat.DefaultChannel,
 			Map:      cfg.Compat.ModelMap,
 			Channels: gateway.SortChannels(currentChannels()),
+			// 启动时也要带上别名表（R125）：不得只靠面板热更新——否则重启后
+			// 「Chat 能用别名、Codex 不能用」，直到用户重新保存一次降级链。
+			Aliases: config.AliasIndex(cfg.ModelFallback),
 		},
 		MaxTokensCap: cfg.Compat.MaxTokensCap,
 	})
@@ -728,9 +731,13 @@ func main() {
 	appInst.SetCompatSyncer(func(defaultChannel string, maxTokensCap int, modelMap map[string]string) {
 		compat.SetCompat(defaultChannel, maxTokensCap, modelMap, currentChannels())
 	})
-	// 面板保存模型降级链时热更新内层 handler（不然新链要重启才生效）
+	// 面板保存模型降级链时热更新**两处**（R125）：内层 handler（降级路由 + 别名解析）
+	// 与兼容层（Responses / Anthropic 的别名表）。旧实现只推内层，这是既有接线缺口——
+	// 漏推的表现是「Chat 能用别名、Codex 不能」。兼容层的别名表走独立的 SetAliases，
+	// 不扩展 SetCompat（后者由另一条保存路径负责，两条通道互不覆盖）。
 	appInst.SetModelFallbackSyncer(func(rules []config.ModelFallbackRule) {
 		inner.SetModelFallbacks(rules)
+		compat.SetAliases(config.AliasIndex(rules))
 	})
 	// 面板保存思考强度映射时热更新内层 handler（不然新映射要重启才生效）
 	appInst.SetReasoningEffortsSyncer(func(efforts map[string]string) {
