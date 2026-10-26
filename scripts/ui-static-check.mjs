@@ -193,6 +193,9 @@ const patched =
   // 只能在源码作用域内赋值，故由改写注入 setter 而不是靠 globalThis）。
   // ⚠️ cache 必须按 uid 建键：真实代码是 detailCache[detailState.uid]，
   //    直接塞「响应对象」会让 detailCache[uid] 为 undefined（静默走空明细分支）。
+  // 降级链别名（R125）前端即时校验：fbRules / fbAliasValidate 是 `let` 与模块内函数，
+  // 由改写注入 setter + 校验入口，供「硬拒分支 + 软警告不阻止保存」的断言直接调用。
+  + ", fbAliasValidate, __setFbRules: (rs) => { fbRules = rs; }"
   + ", renderCreditDetail, showCreditDetail, __setCreditDetailState: (st, resp) => { detailState = st; detailCache = { [st.uid]: resp }; }"
   // 「不适用」默认收起（R103）：showNoCredit / acctFilter 都是 `let`，toggle 也要直接调
   + ", applyAcctFilter, toggleNoCredit, __setShowNoCredit: (v) => { showNoCredit = v; }, __setAcctFilter: (v) => { acctFilter = v; }"
@@ -953,6 +956,28 @@ for (const [label, re] of uniq) {
       && /const \[hardErr\] = fbAliasValidate\(\);[\s\S]{0,120}if \(hardErr\)/.test(raw)],
     ["保存后端硬拒别名含 /（唯一真相在服务端）",
       readFileSync(new URL("../internal/app/app.go", import.meta.url), "utf8").includes("不能含 /（别名是裸名")],
+    // 前端即时校验的**行为**断言（不只看代码里有几行）：逐条硬拒必须报错，
+    // 裸名重合必须只出软警告（否则用户被硬拦或根本不知情）。
+    ["前端即时校验：六条硬拒各一例都报错",
+      (() => {
+        const cases = [
+          [{ from: "a/b", to: ["c/d"], name: "x/y" }],
+          [{ from: "a/b", to: ["c/d"], name: "x y" }],
+          [{ from: "a/b", to: ["c/d"], name: "x,y" }],
+          [{ from: "a/b", to: ["c/d"], name: "x*" }],
+          [{ from: "a/b", to: ["c/d"], name: "dup" }, { from: "a/e", to: ["c/d"], name: "dup" }],
+          [{ from: "a/b", to: ["c/d"], name: "workbuddy" }],
+        ];
+        return cases.every((rs) => { T.__setFbRules(rs); return T.fbAliasValidate()[0] !== ""; });
+      })()],
+    ["前端即时校验：空别名合法（不报错不警告）",
+      (() => { T.__setFbRules([{ from: "a/b", to: ["c/d"], name: "" }]);
+        const [h, w] = T.fbAliasValidate(); return h === "" && w === ""; })()],
+    ["前端即时校验：与真实裸名重合只出软警告（不硬拦）",
+      (() => { T.__setFbRules([{ from: "a/b", to: ["c/d"], name: "glm-5.3" }]);
+        const [h, w] = T.fbAliasValidate(); return h === "" && w.includes("裸名重合"); })()],
+    ["软警告不阻止保存（saveModelFallback 只硬拦 hardErr）",
+      raw.includes(`if (hardErr) { $("fbErr").textContent = hardErr; return; }`)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);

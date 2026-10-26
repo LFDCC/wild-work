@@ -2879,24 +2879,37 @@ func (a *App) SetCompatSyncer(fn func(defaultChannel string, maxTokensCap int, m
 func (a *App) SetModelFallbackSyncer(fn func(rules []config.ModelFallbackRule)) { a.fbSyncer = fn }
 
 // SetModelFallback 保存模型降级链（设置面板可视化编辑）。
-// 校验：From/To 均须 "channel/model" 全路径；From 全局唯一；每链 To 至少一项、
-// 不含 From 自身（不自环）；Name（别名）可选，空串 = 无别名，不得含 `/`
-// （别名是裸名，带斜杠会与 channel/model 前缀语义打架）。空规则列表 = 清空禁用。
-// 保存即热生效（fbSyncer 推内层 handler 与兼容层，R125）。
-func (a *App) SetModelFallback(rules []config.ModelFallbackRule) error {
+//
+// 校验（后端是**唯一真相**，前端同一套校验只为即时反馈）：
+//   - From/To 均须 "channel/model" 全路径；From 全局唯一；每链 To 至少一项、不含 From 自身
+//   - Name（别名，R125）可选，空串 = 无别名；非空时按 validateAliases 的硬拒矩阵逐条拦下
+//
+// 返回的 warnings 是**软警告**（允许保存）：目前只有「别名与当前模型列表的某个裸名重合」。
+// 空规则列表 = 清空禁用。保存即热生效（fbSyncer 推内层 handler 与兼容层，R125）。
+func (a *App) SetModelFallback(rules []config.ModelFallbackRule) ([]string, error) {
+	// 别名索引先建：下面校验 To 时要靠它识别「备胎里写了别名」。
+	// 形态类硬拒（含 / 、空白/逗号/*、重名）仍由 validateAliases 统一点名，
+	// 这里只取一份「合法别名 → 规则序号」用于 To 检查（脏名不进索引，与运行时同源）。
+	aliasIdx := map[string]int{}
+	for i, r := range rules {
+		name := strings.TrimSpace(r.Name)
+		if name == "" || strings.Contains(name, "/") || !config.ValidAliasName(name) {
+			continue
+		}
+		if _, dup := aliasIdx[name]; !dup {
+			aliasIdx[name] = i
+		}
+	}
 	seen := map[string]bool{}
 	for i := range rules {
 		r := &rules[i]
 		r.From = strings.TrimSpace(r.From)
 		r.Name = strings.TrimSpace(r.Name)
-		if strings.Contains(r.Name, "/") {
-			return fmt.Errorf("规则 %d 的别名 %q 不能含 /（别名是裸名，不是 channel/model 形式）", i+1, r.Name)
-		}
 		if strings.Index(r.From, "/") <= 0 {
-			return fmt.Errorf("规则 %d 的主模型 %q 需为 channel/model 形式", i+1, r.From)
+			return nil, fmt.Errorf("规则 %d 的主模型 %q 需为 channel/model 形式", i+1, r.From)
 		}
 		if seen[r.From] {
-			return fmt.Errorf("主模型 %q 重复（每个主模型只允许一条规则）", r.From)
+			return nil, fmt.Errorf("主模型 %q 重复（每个主模型只允许一条规则）", r.From)
 		}
 		seen[r.From] = true
 		tos := make([]string, 0, len(r.To))
@@ -2905,31 +2918,139 @@ func (a *App) SetModelFallback(rules []config.ModelFallbackRule) error {
 			if to == "" {
 				continue
 			}
+			// ⑥ 备胎链不得写别名（必须在「需为 channel/model 形式」之前判，否则
+			// 用户只会看到一条不知道自己做错了什么的形态错误）。
+			if j, isAlias := aliasIdx[to]; isAlias {
+				return nil, fmt.Errorf("规则 %d 的备胎 %q 是规则 %d 的别名（备胎链只能写 channel/model 全路径，别名不参与备胎链）", i+1, to, j+1)
+			}
 			if strings.Index(to, "/") <= 0 {
-				return fmt.Errorf("主模型 %q 的备胎 %q 需为 channel/model 形式", r.From, to)
+				return nil, fmt.Errorf("主模型 %q 的备胎 %q 需为 channel/model 形式", r.From, to)
 			}
 			if to == r.From {
-				return fmt.Errorf("主模型 %q 的备胎不能是它自己", r.From)
+				return nil, fmt.Errorf("主模型 %q 的备胎不能是它自己", r.From)
 			}
 			tos = append(tos, to)
 		}
 		if len(tos) == 0 {
-			return fmt.Errorf("主模型 %q 的降级链为空（至少填一个备胎模型）", r.From)
+			return nil, fmt.Errorf("主模型 %q 的降级链为空（至少填一个备胎模型）", r.From)
 		}
 		r.To = tos
 	}
+	// ⑥ 的兜底（防御）：主模型也不得写别名——别名指向别名会让「一次请求最多
+	// 降级一次 + 不自环」失去可静态证明性。
+	for i, r := range rules {
+		if _, isAlias := aliasIdx[r.From]; isAlias {
+			return nil, fmt.Errorf("规则 %d 的主模型 %q 本身是别名（主力模型必须写 channel/model 全路径，别名指向别名不合法）", i+1, r.From)
+		}
+	}
+	warns, err := a.validateAliases(rules)
+	if err != nil {
+		return nil, err
+	}
 	a.mu.Lock()
 	a.cfg.ModelFallback = rules
-	err := config.Save(a.cfg, a.cfgPath)
+	err = config.Save(a.cfg, a.cfgPath)
 	a.mu.Unlock()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if a.fbSyncer != nil {
 		a.fbSyncer(rules)
 	}
 	log.Printf("模型降级链已更新（%d 条规则，保存即热生效）", len(rules))
-	return nil
+	return warns, nil
+}
+
+// validateAliases 校验降级链别名（R125）。硬拒返回错误（文案点名哪条规则的哪个名字）；
+// 软警告返回字符串列表（**不阻止保存**，只告知歧义）。
+//
+// 六条硬拒：① 含 `/`；② 含空白/逗号/`*`；③ 与其他规则的 Name 重名；
+// ④ 与 compat.model_map 的任何 key 重名（含以 `*` 结尾的通配 key）；
+// ⑤ 与任一渠道名重名；⑥ To 里出现别名（备胎链不得写别名）。
+func (a *App) validateAliases(rules []config.ModelFallbackRule) ([]string, error) {
+	// 先建索引：重名判定与 To 校验都靠它（派生口径与 config.AliasIndex 一致，脏名跳过）
+	idx := map[string]int{}
+	for i, r := range rules {
+		name := strings.TrimSpace(r.Name)
+		if name == "" {
+			continue
+		}
+		if strings.Contains(name, "/") {
+			return nil, fmt.Errorf("规则 %d 的别名 %q 不能含 /（别名是裸名，不是 channel/model 形式）", i+1, name)
+		}
+		if !config.ValidAliasName(name) {
+			return nil, fmt.Errorf("规则 %d 的别名 %q 不能含空白、逗号或 *", i+1, name)
+		}
+		if j, dup := idx[name]; dup {
+			return nil, fmt.Errorf("规则 %d 的别名 %q 与规则 %d 重名（别名不可重复，且大小写敏感：Fast ≠ fast）", i+1, name, j+1)
+		}
+		idx[name] = i
+	}
+	if len(idx) == 0 {
+		return nil, nil
+	}
+
+	a.mu.Lock()
+	modelMap := map[string]string{}
+	for k, v := range a.cfg.Compat.ModelMap {
+		modelMap[k] = v
+	}
+	a.mu.Unlock()
+	channels := map[string]bool{}
+	for _, rt := range a.runtimesSnapshot() {
+		if rt != nil {
+			channels[rt.Kind.String()] = true
+		}
+	}
+	// 保留名（含上游命名空间如 cline-free）也算渠道名：它们参与前缀解析
+	for k := range provider.BuiltinKinds() {
+		channels[k] = true
+	}
+
+	for name, i := range idx {
+		if _, hit := modelMap[name]; hit {
+			return nil, fmt.Errorf("规则 %d 的别名 %q 与 compat.model_map 的键重名（别名优先，同名会造出「有时走映射、有时走别名」的幽灵行为）", i+1, name)
+		}
+		if channels[name] {
+			return nil, fmt.Errorf("规则 %d 的别名 %q 与渠道名重名（会搅乱 channel/model 前缀解析）", i+1, name)
+		}
+	}
+	// ⑥ 的兜底（防御）：To 里写别名已在上面（形态校验之前）拦下，这里只保留模型映射/渠道名冲突的判定。
+	return a.aliasBareNameWarnings(idx), nil
+}
+
+// aliasBareNameWarnings 别名与当前模型列表里某个**裸名**重合 → 软警告（允许保存）。
+// 运行时按别名走（别名优先于 model_map / default_channel），用户需要知情。
+// 模型列表因上游不可达而暂时为空时静默跳过，绝不阻塞保存。
+func (a *App) aliasBareNameWarnings(idx map[string]int) []string {
+	if a.handler == nil {
+		return nil
+	}
+	byKind := a.handler.CachedChannelModels()
+	if len(byKind) == 0 {
+		return nil
+	}
+	bare := map[string]bool{}
+	for _, infos := range byKind {
+		for _, mi := range infos {
+			id := strings.TrimSpace(mi.ID)
+			if id == "" {
+				continue
+			}
+			bare[id] = true
+			if i := strings.Index(id, "/"); i > 0 { // 命名空间形态（cline-free/x）也提供裸名视角
+				bare[id[i+1:]] = true
+			}
+		}
+	}
+	var out []string
+	for name := range idx {
+		if bare[name] {
+			out = append(out, fmt.Sprintf("别名 %q 与某个真实模型的裸名重合：运行时按别名走（别名优先于 model_map / default_channel）", name))
+		}
+	}
+	sort.Strings(out) // 稳定输出（面板逐条提示，map 遍历序不确定）
+	return out
 }
 
 // SetReasoningEffortsSyncer 注入思考强度映射热更新回调（由 main.go 注入：推给 server.Handler）。
@@ -3848,11 +3969,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			Rules []config.ModelFallbackRule `json:"rules"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if err := a.SetModelFallback(req.Rules); err != nil {
+		warns, err := a.SetModelFallback(req.Rules)
+		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		// 软警告随成功响应下发（允许保存，只告知歧义），面板用黄字提示。
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "warnings": warns})
 	})
 	mux.HandleFunc("POST /api/config/reasoning_efforts", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

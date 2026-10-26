@@ -2455,8 +2455,12 @@ async function saveModelFallback() {
     fbSanitize(); // 落盘前互斥兜底（正常路径 renderFbList 已清洗过，防御未来路径）
     const [hardErr] = fbAliasValidate();
     if (hardErr) { $("fbErr").textContent = hardErr; return; } // 前端即时反馈（后端仍独立判定）
-    await api("/api/config/model_fallback", { rules: fbRules });
-    toast("降级链已保存（热生效）");
+    const resp = await api("/api/config/model_fallback", { rules: fbRules });
+    // 后端软警告（如别名与真实裸名重合）如实透出，不阻止保存
+    const warns = (resp && resp.warnings) || [];
+    toast(warns.length ? "降级链已保存（热生效），有 " + warns.length + " 条提示" : "降级链已保存（热生效）");
+    if (warns.length) $("fbAliasWarn").textContent = "⚠ " + warns.join("；");
+    if (warns.length) $("fbAliasWarn").style.display = "";
     $("fbErr").textContent = "";
     state.model_fallback = JSON.parse(JSON.stringify(fbRules)); // 即时同步服务端态基准，提示随之熄灭
     updateFbDirty();
