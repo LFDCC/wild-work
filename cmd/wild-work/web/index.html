@@ -358,40 +358,86 @@
     <div class="modal-title">添加 WPS Comate 账号</div>
     <div class="modal-body settings-body">
 
-      <div class="cfg-section">
-        <div class="cfg-heading">获取 wps_sid</div>
+      <!-- 扫码登录（推荐）：二维码由**服务端**申请，手机确认后服务端自己换出 wps_sid。
+           不要求运行 wild-work 的机器有桌面或浏览器，NAS / docker / systemd 一样能用；
+           也绕开了同源策略（用户浏览器读不到 wps.cn 的 Cookie，服务端自己登录就无所谓）。 -->
+      <div class="cfg-section" id="comateQr">
+        <div class="cfg-heading">扫码登录（推荐）</div>
         <ol class="glm-steps">
-          <li>用浏览器登录 <a href="https://www.wps.cn/" target="_blank" rel="noopener noreferrer">www.wps.cn</a>（WPS 账号即可，无需会员）。</li>
-          <li>按 F12 打开开发者工具 → <code>Application</code>（应用）→ <code>Cookies</code> → <code>https://www.wps.cn</code>。</li>
-          <li>找到名为 <code>wps_sid</code> 的 Cookie，复制它的<b>值</b>（约 50 位字符）粘贴到下面。</li>
+          <li>用手机上的 <b>WPS Office</b> 扫下方二维码。</li>
+          <li>手机上点「确认登录」，这里会自动完成，<b>不需要复制任何 Cookie</b>。</li>
+          <li>二维码由服务器自己申请、自己换登录态，所以对 NAS / 服务器部署同样有效。</li>
         </ol>
-        <input id="comateSidInput" class="input grow" spellcheck="false" autocomplete="off"
-               placeholder="粘贴 wps_sid Cookie 值" style="width:100%;font-family:ui-monospace,monospace">
+        <div class="comate-qr-box">
+          <img id="comateQrImg" class="comate-qr hidden" alt="WPS 登录二维码" width="180" height="180">
+          <div id="comateQrEmpty" class="comate-qr-empty">正在申请二维码…</div>
+        </div>
+        <div class="hint" id="comateQrStatus">用手机 WPS Office「扫一扫」扫描二维码</div>
+        <div class="hint" style="margin-top:8px">
+          <button class="btn small primary" id="btnComateQrStart">重新申请二维码</button>
+        </div>
+        <div class="hint">每个账号单独扫一次；二维码约 2 分钟有效，过期会自动换新。</div>
+      </div>
+
+      <!-- 用本机浏览器登录：接管你自己开着调试端口的 Chrome/Edge，登录页开在你熟悉的
+           浏览器里，登录完自动读 Cookie。仅在 config.json 配了 login.comate_browser_cdp
+           且该端口确实在监听时才显示（否则是给了按钮点了必失败，比不显示更糟）。 -->
+      <div class="cfg-section hidden" id="comateBrowser">
+        <div class="cfg-heading">用本机浏览器登录</div>
+        <ol class="glm-steps">
+          <li>点下面的按钮，会在你<b>已经打开的浏览器</b>里新开一个 WPS 登录页标签。</li>
+          <li>在那个标签里输入账号密码（或用手机扫码）完成登录。</li>
+          <li>登录成功后本页自动读取该浏览器的 Cookie，<b>无需复制</b>。</li>
+        </ol>
+        <div class="hint" id="comateBrowserHint"></div>
+        <div class="hint" style="margin-top:8px">
+          <button class="btn small" id="btnComateBrowserStart">在浏览器中登录</button>
+        </div>
+        <div class="hint" id="comateBrowserStatus"></div>
       </div>
 
       <!-- 关键约束：积分按 WPS 账号计，同账号多 sid 不扩额度。 -->
       <div class="glm-warn">
-        <div class="glm-warn-title">⚠️ 必须使用多个独立 WPS 账号各自的 wps_sid</div>
+        <div class="glm-warn-title">⚠️ 必须使用多个独立 WPS 账号</div>
         <ol>
           <li>Comate 积分<b>按 WPS 账号计</b>。</li>
-          <li>同一个账号重复粘贴同一份 wps_sid <b>共享同一份额度</b>，不会增加可用积分。
-              本工具在检测到重复 sid 时会给出提示。</li>
-          <li>想扩额度请<b>注册多个独立 WPS 账号</b>，各自登录后逐个粘贴添加。</li>
+          <li>同一个账号重复添加<b>共享同一份额度</b>，不会增加可用积分。
+              本工具在检测到同一账号时会给出提示。</li>
+          <li>想扩额度请<b>注册多个独立 WPS 账号</b>，逐个登录添加。</li>
         </ol>
+      </div>
+
+      <!-- 手工兜底：没有桌面环境（如 NAS 无显示器）或自动拉浏览器失败时使用 -->
+      <div class="cfg-section">
+        <div class="cfg-heading">
+          <span class="btn small" id="btnComateToggleManual" style="cursor:pointer">手工方式（复制 wps_sid）</span>
+        </div>
+        <div id="comateManual" class="hidden">
+          <ol class="glm-steps">
+            <li>在自己浏览器登录 <a href="https://www.wps.cn/" target="_blank" rel="noopener noreferrer">www.wps.cn</a>（WPS 账号即可，无需会员）。</li>
+            <li>按 <code>F12</code> → <code>Application</code> → <code>Cookies</code> → <code>https://www.wps.cn</code>。</li>
+            <li>找到 <code>wps_sid</code>，复制它的<b>值</b>粘贴到下面。懒得找的话，整行复制
+                （<code>wps_sid=V02S…;</code>）或整段 Cookie 请求头（<code>F12</code> → <code>Network</code> →
+                任一 wps.cn 请求 → 复制 <code>Cookie</code> 头）也行，工具会自动取出其中的值。</li>
+          </ol>
+          <input id="comateSidInput" class="input grow" spellcheck="false" autocomplete="off"
+                 placeholder="粘贴 wps_sid 的值，或整段 Cookie" style="width:100%;font-family:ui-monospace,monospace">
+          <div class="hint" style="margin-top:6px">
+            <button class="btn small primary" id="btnComateSubmit">验证并添加</button>
+          </div>
+        </div>
       </div>
 
       <div class="hint">
         模型列表由上游 <code>/models</code> 动态下发（含 GLM / DeepSeek / MiniMax / MiMo 等，
         上下文窗口等参数为上游官方声明）。上游无余额查询接口，故积分显示「不适用」；
         实际消耗见每次回答的 <code>usage.credits</code> 与「用量与流水」。
-        wps_sid 过期较慢，但若验证失败提示「无效或已过期」，请重新从浏览器复制。
       </div>
 
       <div class="hint" id="comateErr" style="color:var(--danger)"></div>
     </div>
     <div class="modal-actions">
-      <button class="btn" id="btnComateCancel">取消</button>
-      <button class="btn primary" id="btnComateSubmit">添加</button>
+      <button class="btn" id="btnComateCancel">关闭</button>
     </div>
   </div>
 </div>

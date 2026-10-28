@@ -20,6 +20,7 @@ import (
 
 	"wild-work/internal/auth"
 	"wild-work/internal/backuplink"
+	"wild-work/internal/cdp"
 	"wild-work/internal/cline"
 	"wild-work/internal/comate"
 	"wild-work/internal/config"
@@ -27,6 +28,7 @@ import (
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
 	logincodearts "wild-work/internal/login_codearts"
+	"wild-work/internal/login_comate"
 	logingemini "wild-work/internal/login_gemini"
 	"wild-work/internal/login_glm"
 	loginlobsterai "wild-work/internal/login_lobsterai"
@@ -136,6 +138,13 @@ type App struct {
 	// 它不轮询 state 文件，而是经 CDP 从浏览器 Cookie 捕获凭据）。
 	muGLMLogin sync.Mutex
 	glmLogin   *loginglm.AutoSession
+
+	// WPS Comate 扫码登录会话（服务端 HTTP，不需要桌面/浏览器；见 internal/login_comate）。
+	muComateLogin sync.Mutex
+	comateLogin   *logincomate.QRSession
+	// comateBrowser 接管本机浏览器登录的会话（与扫码会话互斥使用，但各自独立存放：
+	// 用户可能先用扫码、再改用浏览器，两条会话不应互相清状态）。
+	comateBrowser *logincomate.BrowserSession
 
 	muOALogin sync.Mutex
 	oaLogin   *officeace.LoginSession
@@ -1655,7 +1664,9 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 // 同账号检测：wps_sid 与已入库账号逐字比对 —— 同一份 sid 重复添加不扩额度
 //（积分按 WPS 账号计），提示用户换账号而不是重复粘贴。
 func (a *App) SubmitComateSID(sid string) (string, string, error) {
-	s := strings.TrimSpace(sid)
+	// 容错：用户常把整段 Cookie / DevTools 表格一行 / 带引号的值一起粘进来，
+	// 这里先规整成裸值（否则报「sid 无效」，用户完全无从自查）。
+	s := comate.NormalizeSID(sid)
 	if s == "" {
 		return "", "", errors.New("wps_sid 不能为空")
 	}
@@ -1680,7 +1691,7 @@ func (a *App) SubmitComateSID(sid string) (string, string, error) {
 	ca := &auth.Auth{
 		Kind:        "comate",
 		UID:         uid,
-		Nickname:    "WPS 账号 " + uid[len(uid)-6:],
+		Nickname:    comateNickname(uid),
 		AccessToken: s,
 		// Cookie 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
 		ExpiresAt: comate.FarFutureExpiry(),
@@ -1694,6 +1705,149 @@ func (a *App) SubmitComateSID(sid string) (string, string, error) {
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.Comate)
 	return uid, warn, nil
+}
+
+// comateNickname 账号展示名（uid 末尾 6 位足够区分同一台机器上的多个 WPS 账号）。
+func comateNickname(uid string) string {
+	if len(uid) <= 6 {
+		return "WPS 账号"
+	}
+	return "WPS 账号 " + uid[len(uid)-6:]
+}
+
+// StartComateQRLogin 发起 WPS Comate「扫码登录」：服务端向 qr.wps.cn 申请二维码，
+// 面板显示二维码，用户用手机 WPS 扫码确认后，服务端自己换出 wps_sid 并落盘。
+//
+// 为什么不像 GLM 那样用 CDP 拉浏览器：CDP 只能拉起「运行 wild-work 的那台机器」的
+// 浏览器，NAS / docker / systemd 没有桌面，窗口永远弹不出来；而用户自己浏览器里的
+// Cookie 又受同源策略保护读不到。扫码这条路把登录放在服务端完成，与部署环境无关。
+//
+// 返回后立即进入 pending；前端轮询 GetComateQRLoginStatus 获知二维码与扫码进度。
+// 校验 + 落盘复用 SubmitComateSID —— 自动与手工两条入口共用同一份验证、
+// 同账号告警与日志纪律，不各写一份。
+func (a *App) StartComateQRLogin() error {
+	a.muComateLogin.Lock()
+	defer a.muComateLogin.Unlock()
+	if a.comateLogin != nil {
+		switch a.comateLogin.State() {
+		case logincomate.QRStatePending, logincomate.QRStateScanned:
+			return errors.New("已有 Comate 扫码登录进行中，请在手机上完成确认，或先取消")
+		}
+	}
+	sess, err := logincomate.StartQR(func(sid string) (logincomate.Result, error) {
+		uid, warn, serr := a.SubmitComateSID(sid)
+		if serr != nil {
+			return logincomate.Result{}, serr
+		}
+		return logincomate.Result{UID: uid, Nickname: comateNickname(uid), Warn: warn}, nil
+	})
+	if err != nil {
+		return err
+	}
+	a.comateLogin = sess
+	return nil
+}
+
+// GetComateQRLoginStatus 查询扫码登录状态：state（idle/pending/scanned/success/failed/
+// cancelled）、二维码图片地址 qr、错误信息、成功时的 uid。
+func (a *App) GetComateQRLoginStatus() map[string]any {
+	a.muComateLogin.Lock()
+	sess := a.comateLogin
+	a.muComateLogin.Unlock()
+	if sess == nil {
+		return map[string]any{"state": "idle"}
+	}
+	return sess.Snapshot()
+}
+
+// CancelComateQRLogin 取消扫码登录。
+func (a *App) CancelComateQRLogin() error {
+	a.muComateLogin.Lock()
+	sess := a.comateLogin
+	a.muComateLogin.Unlock()
+	if sess == nil {
+		return errors.New("没有进行中的 Comate 登录")
+	}
+	sess.Cancel()
+	return nil
+}
+
+// ComateBrowserInfo 报告「用本机浏览器登录」这条路是否可用。
+//
+// configured=false（没配 login.comate_browser_cdp）时前端根本不显示入口；
+// configured=true 但 probe 失败时仍显示入口，但把原因写进 hint ——
+// 用户自己开浏览器时忘加 --remote-debugging-port 是最常见的坑，
+// 静默隐藏会让人以为功能不存在。
+func (a *App) ComateBrowserInfo() map[string]any {
+	ep := strings.TrimSpace(a.cfg.Login.ComateBrowserCDP)
+	out := map[string]any{"configured": ep != "", "endpoint": ep}
+	if ep == "" {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := cdp.Probe(ctx, ep); err != nil {
+		out["available"] = false
+		out["hint"] = err.Error()
+		return out
+	}
+	out["available"] = true
+	return out
+}
+
+// StartComateBrowserLogin 接管配置好的本机浏览器：开一个 WPS 登录页标签，
+// 用户登录后由后台轮询该浏览器的 Cookie，读到 wps_sid 即校验并落盘。
+//
+// 与扫码的分工：扫码不需要任何浏览器（服务器无桌面也能用）；
+// 这条路复用用户天天在用的浏览器，登录一次、多号可切，适合桌面用户。
+func (a *App) StartComateBrowserLogin() error {
+	ep := strings.TrimSpace(a.cfg.Login.ComateBrowserCDP)
+	if ep == "" {
+		return errors.New("未启用「用本机浏览器登录」：请在 config.json 的 login.comate_browser_cdp 填写浏览器调试地址（如 http://127.0.0.1:9222）")
+	}
+	a.muComateLogin.Lock()
+	defer a.muComateLogin.Unlock()
+	if a.comateBrowser != nil {
+		switch a.comateBrowser.State() {
+		case logincomate.QRStatePending, logincomate.QRStateScanned:
+			return errors.New("已有 Comate 浏览器登录进行中，请先在浏览器里完成登录，或先取消")
+		}
+	}
+	sess, err := logincomate.StartBrowserLogin(ep, func(sid string) (logincomate.Result, error) {
+		uid, warn, serr := a.SubmitComateSID(sid)
+		if serr != nil {
+			return logincomate.Result{}, serr
+		}
+		return logincomate.Result{UID: uid, Nickname: comateNickname(uid), Warn: warn}, nil
+	})
+	if err != nil {
+		return err
+	}
+	a.comateBrowser = sess
+	return nil
+}
+
+// GetComateBrowserLoginStatus 查询「用本机浏览器登录」的状态。
+func (a *App) GetComateBrowserLoginStatus() map[string]any {
+	a.muComateLogin.Lock()
+	sess := a.comateBrowser
+	a.muComateLogin.Unlock()
+	if sess == nil {
+		return map[string]any{"state": "idle"}
+	}
+	return sess.Snapshot()
+}
+
+// CancelComateBrowserLogin 取消「用本机浏览器登录」（不关闭用户的浏览器）。
+func (a *App) CancelComateBrowserLogin() error {
+	a.muComateLogin.Lock()
+	sess := a.comateBrowser
+	a.muComateLogin.Unlock()
+	if sess == nil {
+		return errors.New("没有进行中的 Comate 浏览器登录")
+	}
+	sess.Cancel()
+	return nil
 }
 
 // StartGLMAutoLogin 发起智谱清言自动登录：拉起独立 profile 的浏览器，
@@ -3890,6 +4044,44 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
+	})
+	// Comate 扫码登录（服务端申请二维码，手机确认后自动拿 wps_sid）：三段式。
+	mux.HandleFunc("POST /api/login/comate_qr", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.StartComateQRLogin(); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, a.GetComateQRLoginStatus())
+	})
+	mux.HandleFunc("GET /api/login/comate_qr_status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.GetComateQRLoginStatus())
+	})
+	mux.HandleFunc("GET /api/login/comate_browser_info", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.ComateBrowserInfo())
+	})
+	mux.HandleFunc("POST /api/login/comate_browser", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.StartComateBrowserLogin(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, a.GetComateBrowserLoginStatus())
+	})
+	mux.HandleFunc("GET /api/login/comate_browser_status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.GetComateBrowserLoginStatus())
+	})
+	mux.HandleFunc("POST /api/login/comate_browser_cancel", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.CancelComateBrowserLogin(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("POST /api/login/comate_qr_cancel", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.CancelComateQRLogin(); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("POST /api/account/checkin", func(w http.ResponseWriter, r *http.Request) {

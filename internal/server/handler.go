@@ -446,7 +446,18 @@ var dynamicModelsCache struct {
 const (
 	dynamicModelsTTL        = time.Hour
 	modelsFetchFailCooldown = 5 * time.Minute
+	// maxModelsFetchAccounts 限制一次目录拉取最多尝试几个账号。
+	// 取值理由：目录是渠道级的，理论上要试到「有一个账号能给出目录」为止；
+	// 但一个池若全是坏账号（20 个），逐个串行探测会让 /v1/models 首字节等上
+	// 几十秒。3 个候选覆盖绝大多数真实场景（同人多开 / 少数号未开通），
+	// 剩下的坏号由 5min 负缓存与下一轮刷新兜底。
+	maxModelsFetchAccounts = 3
 )
+
+// errEmptyModelCatalog 表示上游正常应答但目录为空（如 WPS Comate 账号
+// 未开通模型时 /models 返回 items=[]）。它不是传输/鉴权错误，
+// 但对「渠道维度」的目录来说等价于这次尝试失败，需要换号重试。
+var errEmptyModelCatalog = errors.New("upstream returned an empty model catalog")
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.modelList()})
@@ -602,25 +613,52 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 		return nil
 	}
 	rt.mu.RUnlock()
-	acct := rt.Pool.Pick()
-	if acct == nil {
-		return nil
-	}
-	// 401 自愈：与费率路径（RefreshPricing）同款——拉取前先检查 token 有效性，
-	// 过期先 refresh + 落盘。否则冷启动时 qodercn/qodercom 等无静态兑底渠道
-	// 拿过期 token 拉 FetchModels → 401 → 静默失败 → 负缓存 5min，
-	// 费率面板整组消失，最坏要等 30min ticker 才补拉（不变量 19）。
-	if acct.NeedsRefresh(10 * time.Minute) {
-		if err := rt.Upstream.RefreshToken(acct); err != nil {
-			log.Printf("models fetch token refresh failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
-		} else if serr := acct.SaveAtomic(); serr != nil {
-			log.Printf("models fetch token save failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
+	// 多账号回退（R133）：模型目录是**渠道维度**的，而 Pick 只取一个账号。
+	// 只要池里有一个「拉不到目录」的账号——comate 未开通模型时 /models 返回
+	// items=[]，token 失效时返回 401——单次 Pick 抽中它的那一刻，整条渠道的
+	// 模型面就归零并进入 5min 负缓存。实测事故：加了第二个 WPS 账号后
+	// comate 的 9 个模型瞬间变 0，面板里整条渠道消失，要等负缓存过期或重启。
+	// 因此「拉不到」不等于「渠道没有模型」：换下一个账号重试，
+	// 只有所有候选账号都失败，才认领渠道级失败（与旧语义一致，进负缓存）。
+	tried := make(map[string]bool, 4)
+	var (
+		lastUID string
+		lastErr error
+		infos   []provider.ModelInfo
+	)
+	for attempt := 0; attempt < maxModelsFetchAccounts; attempt++ {
+		acct := rt.Pool.PickExcluding(tried)
+		if acct == nil {
+			break
 		}
-	}
-	infos, err := rt.Upstream.FetchModels(acct)
-	if err != nil || len(infos) == 0 {
+		tried[acct.UID] = true
+		lastUID = acct.UID
+		// 401 自愈：与费率路径（RefreshPricing）同款——拉取前先检查 token 有效性，
+		// 过期先 refresh + 落盘。否则冷启动时 qodercn/qodercom 等无静态兑底渠道
+		// 拿过期 token 拉 FetchModels → 401 → 静默失败 → 负缓存 5min，
+		// 费率面板整组消失，最坏要等 30min ticker 才补拉（不变量 19）。
+		if acct.NeedsRefresh(10 * time.Minute) {
+			if err := rt.Upstream.RefreshToken(acct); err != nil {
+				log.Printf("models fetch token refresh failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, err)
+			} else if serr := acct.SaveAtomic(); serr != nil {
+				log.Printf("models fetch token save failed platform=%s uid=%s err=%v", rt.Kind, acct.UID, serr)
+			}
+		}
+		got, err := rt.Upstream.FetchModels(acct)
+		if err == nil && len(got) > 0 {
+			infos = got
+			break
+		}
+		lastErr = err
+		if err == nil {
+			lastErr = errEmptyModelCatalog
+		}
 		// 失败不再静默：无静态兑底渠道（qodercn/qodercom）整组消失时，
 		// 至少日志里要有原因可查（曾致 issue #40 复发 40 分钟无法定位）。
+		// 换号重试时同样逐条留痕，否则用户只看到渠道消失、查不到是谁拖垮的。
+		log.Printf("models fetch failed platform=%s uid=%s err=%v n=%d", rt.Kind, acct.UID, lastErr, len(got))
+	}
+	if len(infos) == 0 {
 		now := time.Now()
 		rt.mu.Lock()
 		rt.lastFail = now
@@ -630,7 +668,9 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 			dynamicModelsCache.lastFail = now
 			dynamicModelsCache.Unlock()
 		}
-		log.Printf("models fetch failed platform=%s uid=%s err=%v n=%d", rt.Kind, acct.UID, err, len(infos))
+		if lastUID != "" {
+			log.Printf("models fetch failed platform=%s uid=%s err=%v n=0 (no account yielded a catalog)", rt.Kind, lastUID, lastErr)
+		}
 		return nil
 	}
 	now := time.Now()

@@ -75,6 +75,24 @@ func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
 		return nil, fmt.Errorf("comate: 模型目录拉取失败: %w", err)
 	}
 
+	// 空目录不是「成功」：真实账号可能因额度/开通状态被上游下发 items=[]，
+	// 而 handler 的模型缓存是被单个账号 Pick 出来的 —— 一旦这次 Pick 到空账号，
+	// 整个渠道的模型列表会瞬间归零（实测：加一个未开通 Comate 的账号后 9→0）。
+	// 所以空目录一律回落到已知缓存，绝不覆盖面板。
+	if len(rec.Data.Items) == 0 {
+		c.knownMu.RLock()
+		cached := make([]provider.ModelInfo, 0, len(c.knownIDs))
+		for id, name := range c.knownIDs {
+			cached = append(cached, modelInfoOf(id, name))
+		}
+		c.knownMu.RUnlock()
+		sort.Slice(cached, func(i, j int) bool { return cached[i].ID < cached[j].ID })
+		if len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("comate: 该账号没有可用模型（/models 返回空目录，通常是 Comate 未开通或额度为 0）")
+	}
+
 	seen := map[string]bool{}
 	out := make([]provider.ModelInfo, 0, len(rec.Data.Items))
 	for _, m := range rec.Data.Items {

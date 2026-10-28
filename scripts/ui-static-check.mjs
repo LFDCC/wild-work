@@ -43,9 +43,11 @@ const FAKE_STATE = {
       last_checkin_at: "2026-10-02 09:00",
       last_checkin_ok: true,
     },
-    // 「不适用」账号（场景 1.7）：无积分概念的渠道（oczen/kilo/cline/自定义）。
-    // 两张卡只靠后端下发的 credits_na 区分 —— 这是「默认收起」的唯一判据，
-    // 前端不再另维护渠道名单（否则新增自定义渠道时会被漏收起）。
+    // 虚拟账号（场景 1.7）：oczen/kilo 这类「没有账号概念」的通道，账号不是用户添加的，
+    // 卡片上一串「不适用」纯噪声，故默认收起。**收起判据是「虚拟账号」而不是 credits_na**：
+    // credits_na 只表达「上游没有余额接口」，与「该不该收起」正交 —— 用户亲手粘凭据
+    // 加进来的 cline/comate/自定义渠道账号同样 credits_na，但必须立即可见
+    // （曾按 credits_na 收起，表现为「贴完 wps_sid 账号没刷出来」）。
     {
       uid: "oczen-anon",
       group: "oczen",
@@ -343,13 +345,25 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
   const healthyCardOf = () => cards.split('<div class="acct-card').find((seg) => seg.includes("健康号")) || "";
   // 注意：按 '<div class="acct-card' 切分后，段内已不含 `class="acct-card`，
   // 故断言从 `hidden" data-group=` 这一段开始匹配（直接拿 class= 开头会永远不命中）。
-  check("默认收起：「不适用」账号卡片带 hidden 且 data-na=1",
+  check("默认收起：虚拟账号卡片带 hidden 且 data-na=1",
     /^ hidden" data-group="oczen" data-na="1"/.test(naCardOf()),
     naCardOf().slice(0, 120));
   check("默认收起：有余额的卡片不带 hidden（防「一刀切全收起」）",
     !/^[^"]*hidden/.test(healthyCardOf()), healthyCardOf().slice(0, 120));
-  check("data-na 由后端 credits_na 驱动（非前端渠道名单）",
-    /data-na="\$\{isNoCreditAcct\(a\) \? 1 : 0\}"/.test(raw));
+  // 收回合判据必须是「虚拟账号」：曾用 credits_na，导致用户粘完凭据（cline/comate/
+  // 自定义渠道）后卡片带 hidden，表现为「账号没刷出来」（R131）。
+  check("data-na 由虚拟账号名单驱动（isVirtualAcct），不是 credits_na",
+    /data-na="\$\{isVirtualAcct\(a\) \? 1 : 0\}"/.test(raw)
+      && !/naHiddenClass = \(!showNoCredit && isNoCreditAcct\(a\)\)/.test(raw));
+  {
+    // 反例护栏：fixture 里的 comate 账号（credits_na=true，用户亲手粘 wps_sid 加的）
+    // 必须默认可见 —— 这就是用户报的「贴进去 wps_sid 后账号没刷出来」。
+    const comateCard = cards.split('<div class="acct-card').find((seg) => seg.includes("粘错sid的号")) || "";
+    const head = comateCard.slice(0, comateCard.indexOf(">"));
+    check("用户添加的无积分账号（comate）默认不收起",
+      comateCard !== "" && !head.includes("hidden") && head.includes('data-na="0"'),
+      head.slice(0, 160));
+  }
 
   // 汇总条：收起态下不渲染 oczen 的「不适用」chip，只留一枚可点的开关。
   T.__setShowNoCredit(false);
@@ -358,8 +372,12 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
   check("收起时汇总条不出现 oczen 的渠道 chip", !/data-wg="oczen"/.test(sumOff), sumOff.slice(0, 200));
   check("收起时汇总条保留「不适用」开关 chip（入口在原地）",
     /data-na-toggle="1"/.test(sumOff) && sumOff.includes("不适用"));
-  // 被收起的账号数 = oczen 匿名 + comate（R130 新增的无积分真实账号），故为 2 号。
-  check("开关 chip 标出被收起的账号数（2号）", /<span class="cs-num">2号<\/span>/.test(sumOff), sumOff.slice(0, 300));
+  // 被收起的只有虚拟账号（oczen 匿名）→ 1 号。comate 虽同样 credits_na，
+  // 但它是用户添加的真实账号，不进「被收起」计数（否则数字会误导人去「展开找回」）。
+  check("开关 chip 只统计被收起的虚拟账号（1号）", /<span class="cs-num">1号<\/span>/.test(sumOff), sumOff.slice(0, 300));
+  // 反向护栏：用户添加的无积分渠道 chip 常驻汇总条（贴完就能看见渠道 N 号）。
+  check("收起时 comate 渠道 chip 仍在（用户添加的渠道不被收起）",
+    /data-wg="comate"/.test(sumOff), sumOff.slice(0, 400));
   check("收起态开关不亮 on 高亮", !/cs-chip clickable cs-na on"/.test(sumOff));
 
   // 展开态：chip 回来、开关变 on、账号卡片不再 hidden。
@@ -723,6 +741,31 @@ check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[
   check("模型表渲染平均速度列（无速度样本显示「—」）", (rowsHtml.match(/—/g) || []).length >= 2, rowsHtml.slice(0, 300));
   T2.renderModelTable([], 1);
   check("模型表空态占位行跨 7 列", document.getElementById("tblModelstbody").innerHTML.includes('colspan="7"'));
+}
+
+const regexOk = (re) => re.test(raw);
+
+// ---- 场景 1.8：Comate 登录三条路径（R132）----
+// 起因：分支构建部署到 NAS 后，用户点「一键登录」什么也没发生 —— CDP 拉起的是
+// **运行 wild-work 那台机器**的浏览器，而 NAS 没有桌面。结论不是把报错写漂亮，
+// 而是换一条与部署环境无关的登录路径：服务端申请二维码（扫码），外加可选的
+// 「接管本机浏览器」（用户自己开调试端口时才有）。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  check("弹层带扫码区（服务端申请二维码）", html.includes('id="comateQrImg"') && html.includes('id="btnComateQrStart"'));
+  check("弹层带「用本机浏览器登录」区（默认隐藏，由能力探测决定是否显示）",
+    html.includes('id="comateBrowser"') && /<div class="cfg-section hidden" id="comateBrowser"/.test(html));
+  check("浏览器入口按钮由前端轮询后端状态", regexOk(/btnComateBrowserStart"\).onclick[\s\S]{0,120}startComateBrowser\(\)/));
+  check("打开弹层先探测浏览器能力，而不是先发登录请求",
+    /async function loadComateBrowserInfo/.test(raw) && /openComateDialog[\s\S]{0,400}loadComateBrowserInfo/.test(raw));
+  check("未配置调试端口时整块隐藏（不摆点了必失败的按钮）",
+    /function loadComateBrowserInfo[\s\S]{0,900}!info\.configured\) return/.test(raw));
+  check("配置了但端口不通时给出原因并禁用按钮",
+    /info\.available[\s\S]{0,300}disabled = !info\.available/.test(raw));
+  check("扫码轮询走后端状态接口", /comatePollPath = "\/api\/login\/comate_qr_status"/.test(raw));
+  check("关闭弹层同时取消扫码与浏览器两条会话",
+    /cancelComateLogin[\s\S]{0,400}comate_qr_cancel[\s\S]{0,200}comate_browser_cancel/.test(raw));
+  check("手工兜底仍在（整段 Cookie 也能粘）", html.includes('id="comateSidInput"') && html.includes('id="btnComateToggleManual"'));
 }
 
 // ---- 输出 ----

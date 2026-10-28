@@ -266,13 +266,50 @@ func truncate(s string, n int) string {
 // ValidateSID：面板添加账号入口（零 token 消耗）
 // ---------------------------------------------------------------------------
 
+// NormalizeSID 把用户粘贴的内容规整成裸 wps_sid 值。
+//
+// 面板要求的是「整条 Cookie 里 wps_sid 的值」，但普通用户的常见操作是：
+//
+//   - 在 DevTools 的 Cookie 表格里连列名一起复制 → `wps_sid  V02S...`（Tab 分隔）
+//   - 直接复制整行 `wps_sid=V02S...;`
+//   - 复制整个 Cookie 请求头 → `Cookie: OTHER=1; wps_sid=V02S...; ANOTHER=2`
+//   - 多复制了引号、换行、结尾分号
+//
+// 以上都包含正确值，只是夹了噪声。不规整就直接丢给上游的话，用户看到的是
+// 「wps_sid 无效或已过期」——像是自己没登录，实际只是复制多了几个字符，
+// 这种失败对普通用户来说完全无从自查，故在这里一次性剥干净。
+func NormalizeSID(raw string) string {
+	s := strings.TrimSpace(raw)
+	// 整段 Cookie 头：`Cookie:` 前缀（大小写不敏感）先摘掉。
+	if len(s) > 7 && strings.EqualFold(s[:7], "cookie:") {
+		s = strings.TrimSpace(s[7:])
+	}
+	// 定位 wps_sid= 或 wps_sid<TAB>/<空格>（DevTools 表格复制是 Tab 分隔）。
+	lower := strings.ToLower(s)
+	if i := strings.Index(lower, "wps_sid="); i >= 0 {
+		s = s[i+len("wps_sid="):]
+	} else if i := strings.Index(lower, "wps_sid"); i >= 0 {
+		// 列名形态：跳过 "wps_sid" 与其后的分隔符（Tab/空格/冒号）。
+		s = strings.TrimLeft(s[i+len("wps_sid"):], " \t:：")
+	}
+	// 取到下一个 Cookie 分隔符为止。
+	if j := strings.IndexAny(s, ";,\t\r\n "); j >= 0 {
+		s = s[:j]
+	}
+	// 引号、结尾分号是复制时最常见的尾巴。
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, `"'`)
+	return s
+}
+
 // ValidateSID 校验 wps_sid 并取回身份（面板添加账号入口，见 app.SubmitComateSID）。
 //
 // 只调 GET /models —— **零 token 消耗、零副作用**，避免「添加账号即烧积分」。
 // sid 无效时上游回 401 not_login（实测），据此给出人话错误。
 // uid 用 sid 的 sha256 前 16 位：上游 /models 不回传任何身份字段（实测），
 // 但 uid 只需稳定且不含明文 —— 与 cline probeKey 的 hash 兜底同款。
-func ValidateSID(sid string) (uid string, err error) {
+func ValidateSID(raw string) (uid string, err error) {
+	sid := NormalizeSID(raw)
 	cli := New()
 	return cli.validateSID(sid)
 }

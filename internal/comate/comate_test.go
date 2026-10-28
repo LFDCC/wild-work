@@ -378,3 +378,92 @@ func TestFetchModelsEmptyDisplayNameSingleSegment(t *testing.T) {
 		t.Fatal("display_name 为空时应由 prettifyID 兜底出展示名")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 粘贴容错（R131）：用户常把整段 Cookie / DevTools 表格一行 / 带引号的值一起粘进来
+// ---------------------------------------------------------------------------
+
+func TestNormalizeSID(t *testing.T) {
+	const sid = "V02FakeSidForUnitTests0000000000000000000000000001"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"裸值", sid, sid},
+		{"前后空白", "  " + sid + "\n", sid},
+		{"双引号", `"` + sid + `"`, sid},
+		{"单引号", `'` + sid + "'", sid},
+		{"k=v 单条", "wps_sid=" + sid, sid},
+		{"k=v 带结尾分号", "wps_sid=" + sid + ";", sid},
+		{"整段 Cookie 头", "Cookie: OTHER=1; wps_sid=" + sid + "; ANOTHER=2", sid},
+		{"小写 cookie 头", "cookie: wps_sid=" + sid + "; x=1", sid},
+		{"DevTools 表格行（Tab 分隔）", "wps_sid\t" + sid + "\t.wps.cn\t/\t2027-01-01\t50", sid},
+		{"DevTools 列名 + 空格", "wps_sid " + sid, sid},
+		{"空串", "   ", ""},
+		{"只有前缀", "wps_sid=", ""},
+	}
+	for _, c := range cases {
+		if got := NormalizeSID(c.in); got != c.want {
+			t.Errorf("%s: NormalizeSID(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// ValidateSID 必须容忍粘贴噪声：上游收到的 Cookie 只能是规整后的裸值。
+func TestValidateSIDAcceptsPastedCookie(t *testing.T) {
+	var gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"items":[]}}`))
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.Base = srv.URL
+	if _, err := c.validateSID(NormalizeSID("Cookie: a=1; wps_sid=" + fakeSID + "; b=2")); err != nil {
+		t.Fatalf("validateSID: %v", err)
+	}
+	if want := CookieName + "=" + fakeSID; gotCookie != want {
+		t.Fatalf("Cookie = %q, want %q（噪声必须被剥掉）", gotCookie, want)
+	}
+}
+
+// TestFetchModelsEmptyDirKeepsCache 锁死「空目录不得清空面板」。
+//
+// 实测事故：面板里加了第二个 WPS 账号（该账号 Comate 未开通 ⇒ /models 恒返回
+// items=[]），handler 的模型缓存是按单个账号 Pick 出来的，一次 Pick 命中空账号，
+// 整个 comate 渠道的 9 个模型瞬间归零、要等 5 分钟负缓存才恢复。
+// 修法：空目录一律回落到已知缓存；缓存也空时返回错误（日志里能看出是账号没开通）。
+func TestFetchModelsEmptyDirKeepsCache(t *testing.T) {
+	full := `{"code":0,"data":{"items":[{"display_name":"GLM-5.3","name":"673940725/zhipu/glm-5.3//public"}]}}`
+	empty := `{"code":0,"data":{"items":[],"total":0}}`
+	serve := full
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(serve))
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.Base = srv.URL
+	a := fakeAuth()
+	if mis, err := c.FetchModels(a); err != nil || len(mis) != 1 {
+		t.Fatalf("首次拉取: err=%v n=%d", err, len(mis))
+	}
+
+	serve = empty // 上游改口：这个账号没有模型
+	mis, err := c.FetchModels(a)
+	if err != nil {
+		t.Fatalf("空目录不得报错（应回落到缓存）: %v", err)
+	}
+	if len(mis) != 1 || mis[0].ID != "673940725/zhipu/glm-5.3//public" {
+		t.Fatalf("空目录应回落到缓存，实际 n=%d %+v", len(mis), mis)
+	}
+
+	// 缓存也空 ⇒ 必须报错（否则面板静默变空、日志无线索）。
+	c2 := New()
+	c2.Base = srv.URL
+	if _, err := c2.FetchModels(a); err == nil {
+		t.Fatal("冷启动遇到空目录应返回错误")
+	}
+}

@@ -878,6 +878,13 @@ const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline", "comate"]);
 // 与 NO_CREDITS_BUILTIN 是**两个维度**：cline/comate 属「无积分但可删可停」，
 // 故不得用「无积分」推导「固定账号」（R130 修正）。
 const VIRTUAL_ACCOUNTS = new Set(["oczen", "kilo"]);
+// isVirtualAcct 「默认收起」（R103）的判据：只看是否虚拟账号，不看 credits_na。
+// 两者正交——credits_na 表达「上游没有余额接口」，虚拟账号表达「账号不是用户添加的」，
+// 而收起只该压掉后者（用户没有添加动作、永远存在的匿名通道）。
+// 曾拿 credits_na 当收起判据，结果用户粘完 wps_sid / cline key 后卡片带 hidden，
+// 表现为「账号没刷出来」（comate、cline、自定义渠道全中招）。
+const isVirtualAcct = (a) => VIRTUAL_ACCOUNTS.has(String((a && a.group) || "workbuddy"));
+const isVirtualCh = (g) => VIRTUAL_ACCOUNTS.has(String(g || "workbuddy"));
 // 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
 // officeace 一并纳入（2026-10-17）：它除了「登录态失效」，还有「缺 refresh_token」
 // 这种**不能自愈**的形态（客户端导入只拿得到不过期的网关 Basic），此时同样只能重新登录
@@ -963,12 +970,14 @@ function renderSummary() {
   // 已知渠道按固定顺序，未知渠道（新增时）按字母序垫后，保证不丢行
   let chs = CH_SUMMARY_ORDER.filter((k) => byCh[k])
     .concat(Object.keys(byCh).filter((k) => !CH_SUMMARY_ORDER.includes(k)).sort());
-  // 「不适用」渠道（无积分概念：oczen/kilo/cline/自定义渠道）默认不进汇总条：
-  // 它们的 chip 只有一句「不适用」，既不反映余额也不参与合计，纯噪声。
-  // 收起时改由末尾一枚开关 chip 汇总提示（点它原地展开），账号卡片同步收起。
-  const naChs = chs.filter((k) => byCh[k].na);
+  // 「不适用」的虚拟渠道（oczen/kilo）默认不进汇总条：它们的 chip 只有一句「不适用」，
+  // 既不反映余额也不参与合计，纯噪声。收起时改由末尾一枚开关 chip 汇总提示（点它原地展开），
+  // 账号卡片同步收起。判据是「虚拟渠道」而不是「无积分」：cline/comate/自定义渠道虽然也
+  // 无积分，但 chip 上的「N号」是用户亲手添加的账号，属于有效信息，不该默认消失
+  // （否则用户粘完凭据只看得到一枚「不适用」开关，等于没刷出账号）。
+  const naChs = chs.filter((k) => isVirtualCh(k));
   const naAccts = naChs.reduce((n, k) => n + byCh[k].n, 0);
-  if (!showNoCredit) chs = chs.filter((k) => !byCh[k].na);
+  if (!showNoCredit) chs = chs.filter((k) => !isVirtualCh(k));
 
   let total = 0, totalExp = 0, staleChs = 0;
   let html = `<span class="cs-title">积分汇总</span>`;
@@ -1007,12 +1016,13 @@ function renderSummary() {
       + `<span class="cs-n">全部</span></span>`;
   }
   // 「不适用」开关：默认收起（只留这一枚），展开后上面会重新出现这些渠道的 chip。
+  // 只覆盖虚拟渠道（oczen/kilo）：用户添加的无积分渠道（cline/comate/自定义）chip 常驻。
   // 入口刻意放在被隐藏 chip 的原位，不额外占工具栏一格（R103）。
   if (naChs.length) {
     const names = naChs.map(chLabel).join("、");
     const naTitle = showNoCredit
       ? `收起「不适用」渠道（${names}）及其账号卡片`
-      : `展开「不适用」渠道（${names}）：这些渠道无积分概念，余额恒为「不适用」`;
+      : `展开「不适用」渠道（${names}）：这些是工具自带的匿名通道，无账号可添加，余额恒为「不适用」`;
     html += `<span class="cs-chip clickable cs-na${showNoCredit ? " on" : ""}" data-na-toggle="1"`
       + ` role="button" tabindex="0" title="${esc(naTitle)}">`
       + `<span class="cs-n">不适用</span><span class="cs-num">${naAccts}号</span>`
@@ -1043,16 +1053,17 @@ function persistShowNoCredit() {
 }
 // isNoCreditAcct 该账号是否「无积分概念」：以后端下发的 credits_na 为准（与汇总条同口径，
 // 含 R66 的自定义渠道动态判定），不在前端另维护一份渠道名单。
+// ⚠️ 它只决定「积分区显示不适用 + 隐藏刷新积分入口」，**不决定**是否默认收起（见 isVirtualAcct）。
 const isNoCreditAcct = (a) => Boolean(a && a.credits_na);
 
 // toggleNoCredit 展开/收起「不适用」渠道与账号卡片。
 function toggleNoCredit() {
   showNoCredit = !showNoCredit;
   persistShowNoCredit();
-  // 收起时若正筛选着某个「不适用」渠道，必须先清筛选：否则筛选态指向已隐藏的渠道，
+  // 收起时若正筛选着某个被收起的虚拟渠道，必须先清筛选：否则筛选态指向已隐藏的渠道，
   // 网格一片空白，而用来取消筛选的「全部」chip 也随汇总条一起消失了。
   if (!showNoCredit && acctFilter
-      && (state.accounts || []).some((a) => isNoCreditAcct(a) && (a.group || "workbuddy") === acctFilter)) {
+      && (state.accounts || []).some((a) => isVirtualAcct(a) && (a.group || "workbuddy") === acctFilter)) {
     acctFilter = null;
   }
   // 重渲染账号卡片而不只改 class：hidden 的直接来源是 renderAccounts 里的 naHiddenClass，
@@ -1088,7 +1099,7 @@ function applyAcctFilter() {
     const hide = total > 0 && shown === 0 && naTotal > 0;
     tip.classList.toggle("hidden", !hide);
     if (hide) {
-      tip.textContent = `已收起 ${naTotal} 个「不适用」账号（无积分概念的渠道）· 点汇总条末尾的「不适用」展开`;
+      tip.textContent = `已收起 ${naTotal} 个虚拟账号（oczen/kilo 匿名通道）· 点汇总条末尾的「不适用」展开`;
     }
   }
 }
@@ -1170,7 +1181,7 @@ function renderAccounts() {
     const fixedAcct = VIRTUAL_ACCOUNTS.has(a.group);
     // 默认收起的「不适用」卡片：渲染时就带上 hidden（而不是等 applyAcctFilter），
     // 首帧不会先闪一排「不适用」再消失；applyAcctFilter 后续负责保持同步。
-    const naHiddenClass = (!showNoCredit && isNoCreditAcct(a)) ? " hidden" : "";
+    const naHiddenClass = (!showNoCredit && isVirtualAcct(a)) ? " hidden" : "";
     // 问号图标：hover 展示 oczen 通道说明（免费反代范围/私有 Key/代理三项）。
     // 放在锁头左侧；用独立的 help 样式（正常亮度 + help 光标），不可点击但 tooltip 可用。
     // title 内换行用 &#10;（HTML 属性实体），字面 \n 会被部分浏览器吞掉导致无 tooltip。
@@ -1219,7 +1230,7 @@ function renderAccounts() {
       : `<span class="acct-name editable" title="点击修改显示名" onclick="openRename('${a.uid}','${esc(a.nickname || shortUid(a.uid)).replace(/'/g, "&#39;")}')">${esc(a.nickname || shortUid(a.uid))}</span>`;
 
     return `
-    <div class="acct-card${disabledClass}${coolingClass}${naHiddenClass}" data-group="${esc(a.group || "workbuddy")}" data-na="${isNoCreditAcct(a) ? 1 : 0}">
+    <div class="acct-card${disabledClass}${coolingClass}${naHiddenClass}" data-group="${esc(a.group || "workbuddy")}" data-na="${isVirtualAcct(a) ? 1 : 0}">
       <div class="acct-top">
         <div>
           ${chBadge(a.group)}
@@ -1876,10 +1887,9 @@ function promptLogin(channel) {
   // 所以这里没有轮询/回调，只有一次「验证 + 落盘」（后端只调 /api-keys，零 token 消耗）。
   if (isPasteKey(channel)) {
     if (channel === "comate") {
-      $("comateSidInput").value = "";
-      $("comateErr").textContent = "";
-      $("comateOverlay").classList.remove("hidden");
-      setTimeout(() => $("comateSidInput").focus(), 30);
+      // Comate 有 CDP 自动登录（拉浏览器 → 登录 → 捕获 wps_sid），默认走这条；
+      // 弹层里仍保留手工粘贴入口，供无桌面环境（NAS）或自动失败时兜底。
+      openComateDialog();
       return;
     }
     $("clineKeyInput").value = "";
@@ -2210,6 +2220,157 @@ function cancelGLMLogin() {
   stopGLMPoll();
   api("/api/login/glm_auto_cancel", {}).catch(() => {});
   $("glmOverlay").classList.add("hidden");
+}
+
+// ---------- WPS Comate 登录（自动捕获 Cookie，手工粘贴为兜底） ----------
+// 扫码登录：二维码由**服务端**向 qr.wps.cn 申请，面板就地显示；手机 WPS 扫码确认后，
+// 服务端自己用 authcode 换 session Cookie 并落盘。全程不需要桌面/浏览器。
+//
+// 这是对「CDP 拉浏览器」方案的环境无关替换：CDP 只能拉起运行 wild-work 那台机器的
+// 浏览器（NAS 无桌面就永远弹不出来），而用户自己浏览器里的 wps_sid 受同源策略保护读不到。
+let comatePoll = null;
+
+// 打开 Comate 添加弹层：直接申请二维码（少点一次按钮）。
+function openComateDialog() {
+  $("comateErr").textContent = "";
+  $("comateManual").classList.add("hidden");
+  $("comateSidInput").value = "";
+  $("comateQrImg").classList.add("hidden");
+  $("comateQrEmpty").classList.remove("hidden");
+  $("comateQrStatus").textContent = "正在申请二维码…";
+  $("comateOverlay").classList.remove("hidden");
+  loadComateBrowserInfo();
+  startComateQr();
+}
+
+// loadComateBrowserInfo 问后端「本机浏览器登录」这条路是否可用。
+// 没配 login.comate_browser_cdp ⇒ 整块隐藏（配都不配就摆按钮，点了只会报错）；
+// 配了但端口不通 ⇒ 仍显示，但把原因写在 hint 里（最常见是浏览器没带
+// --remote-debugging-port 启动，静默隐藏会让人以为功能不存在）。
+async function loadComateBrowserInfo() {
+  const box = $("comateBrowser");
+  box.classList.add("hidden");
+  try {
+    const info = await api("/api/login/comate_browser_info");
+    if (!info || !info.configured) return;
+    box.classList.remove("hidden");
+    $("comateBrowserHint").textContent = info.available
+      ? `已连接到本机浏览器（${info.endpoint}）`
+      : `未连接到 ${info.endpoint}：${info.hint || "浏览器没有开启调试端口"}`;
+    $("btnComateBrowserStart").disabled = !info.available;
+  } catch (e) { /* 探测失败按未配置处理 */ }
+}
+
+// startComateBrowser 接管本机浏览器：后端开标签页到 WPS 登录页，这里轮询 Cookie 结果。
+function startComateBrowser() {
+  stopComatePoll();
+  $("comateErr").textContent = "";
+  $("comateBrowserStatus").textContent = "正在连接浏览器并打开登录页…";
+  api("/api/login/comate_browser", {})
+    .then((st) => {
+      renderComateBrowser(st);
+      startComatePoll("/api/login/comate_browser_status");
+    })
+    .catch((e) => {
+      $("comateBrowserStatus").textContent = "";
+      $("comateErr").textContent = (e.message || "连接浏览器失败") + "（可展开下方手工方式）";
+      $("comateManual").classList.remove("hidden");
+    });
+}
+
+function renderComateBrowser(st) {
+  if (!st) return;
+  if (st.state === "success") {
+    $("comateBrowserStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+  } else {
+    $("comateBrowserStatus").textContent = st.hint || "请在浏览器里完成登录…";
+  }
+}
+
+// startComateQr 申请（或重新申请）一张二维码并开始轮询扫码状态。
+function startComateQr() {
+  stopComatePoll();
+  $("comateErr").textContent = "";
+  $("comateQrStatus").textContent = "正在申请二维码…";
+  $("comateQrImg").classList.add("hidden");
+  $("comateQrEmpty").classList.remove("hidden");
+  api("/api/login/comate_qr", {})
+    .then((st) => {
+      renderComateQr(st);
+      startComatePoll();
+    })
+    .catch((e) => {
+      // 申请不到二维码（网络不通/上游变更）→ 直接把人引到手工方式
+      $("comateQrStatus").textContent = "";
+      $("comateQrEmpty").textContent = "二维码申请失败";
+      $("comateErr").textContent = (e.message || "申请二维码失败") + "（可展开下方手工方式）";
+      $("comateManual").classList.remove("hidden");
+    });
+}
+
+// renderComateQr 把后端状态画到弹层上（二维码图片、扫码进度）。
+function renderComateQr(st) {
+  if (!st) return;
+  if (st.qr) {
+    const img = $("comateQrImg");
+    // 上游每次换新二维码都是一个新地址，直接按值比较即可判断是否要重载。
+    if (img.getAttribute("src") !== st.qr) img.setAttribute("src", st.qr);
+    img.classList.remove("hidden");
+    $("comateQrEmpty").classList.add("hidden");
+  }
+  if (st.state === "scanned") {
+    $("comateQrStatus").textContent = st.hint || "已扫码，请在手机 WPS 上确认登录";
+  } else if (st.state === "pending") {
+    $("comateQrStatus").textContent = "用手机 WPS Office「扫一扫」扫描二维码";
+  }
+}
+
+let comatePollPath = "/api/login/comate_qr_status";
+
+function startComatePoll(path) {
+  stopComatePoll();
+  comatePollPath = path || "/api/login/comate_qr_status";
+  comatePoll = setInterval(async () => {
+    try {
+      const st = await api(comatePollPath);
+      if (comatePollPath === "/api/login/comate_qr_status") renderComateQr(st);
+      else renderComateBrowser(st);
+      if (st.state === "success") {
+        stopComatePoll();
+        if (comatePollPath === "/api/login/comate_qr_status") {
+          $("comateQrStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+        } else {
+          $("comateBrowserStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+        }
+        // toast 是单槽位（后一条覆盖前一条），故告警与成功文案合并成一条：
+        // 同账号告警更重要（用户可能白加了），放前面。
+        toast(st.warning ? `${st.warning} —— ${st.nickname || st.uid} 已添加` : "WPS Comate 账号已添加");
+        await loadState();
+        refreshFees();
+        setTimeout(() => $("comateOverlay").classList.add("hidden"), 1200);
+      } else if (st.state === "failed") {
+        stopComatePoll();
+        $("comateQrStatus").textContent = "";
+        $("comateBrowserStatus").textContent = "";
+        $("comateErr").textContent = (st.error || "登录失败") + "（可展开下方手工方式）";
+        $("comateManual").classList.remove("hidden");
+      } else if (st.state === "cancelled" || st.state === "idle") {
+        stopComatePoll();
+      }
+    } catch (e) { /* 忽略瞬时错误 */ }
+  }, 1500);
+}
+
+function stopComatePoll() {
+  if (comatePoll) { clearInterval(comatePoll); comatePoll = null; }
+}
+
+function cancelComateLogin() {
+  stopComatePoll();
+  // 没有进行中的会话时后端会回 400，属正常情况，静默即可。
+  api("/api/login/comate_qr_cancel", {}).catch(() => {});
+  api("/api/login/comate_browser_cancel", {}).catch(() => {});
+  $("comateOverlay").classList.add("hidden");
 }
 
 // submitClineKey 提交用户粘贴的 Cline 官方 API Key。
@@ -3512,9 +3673,12 @@ function bind() {
   $("btnAddCline").onclick = () => promptLogin("cline");
   $("btnClineSubmit").onclick = submitClineKey;
   $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
-  $("btnAddComate").onclick = () => promptLogin("comate");
+  $("btnAddComate").onclick = () => openComateDialog();
+  $("btnComateQrStart").onclick = () => startComateQr();
+  $("btnComateBrowserStart").onclick = () => startComateBrowser();
   $("btnComateSubmit").onclick = submitComateSID;
-  $("btnComateCancel").onclick = () => $("comateOverlay").classList.add("hidden");
+  $("btnComateCancel").onclick = cancelComateLogin;
+  $("btnComateToggleManual").onclick = () => $("comateManual").classList.toggle("hidden");
   $("btnAddOfficeAce").onclick = () => promptLogin("officeace");
   $("btnAddMiniMax").onclick = () => promptLogin("minimax");
   $("btnAddLobsterAI").onclick = () => promptLogin("lobsterai");
