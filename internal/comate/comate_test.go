@@ -378,3 +378,53 @@ func TestFetchModelsEmptyDisplayNameSingleSegment(t *testing.T) {
 		t.Fatal("display_name 为空时应由 prettifyID 兜底出展示名")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 粘贴容错（R131）：用户常把整段 Cookie / DevTools 表格一行 / 带引号的值一起粘进来
+// ---------------------------------------------------------------------------
+
+func TestNormalizeSID(t *testing.T) {
+	const sid = "V02FakeSidForUnitTests0000000000000000000000000001"
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"裸值", sid, sid},
+		{"前后空白", "  " + sid + "\n", sid},
+		{"双引号", `"` + sid + `"`, sid},
+		{"单引号", `'` + sid + "'", sid},
+		{"k=v 单条", "wps_sid=" + sid, sid},
+		{"k=v 带结尾分号", "wps_sid=" + sid + ";", sid},
+		{"整段 Cookie 头", "Cookie: OTHER=1; wps_sid=" + sid + "; ANOTHER=2", sid},
+		{"小写 cookie 头", "cookie: wps_sid=" + sid + "; x=1", sid},
+		{"DevTools 表格行（Tab 分隔）", "wps_sid\t" + sid + "\t.wps.cn\t/\t2027-01-01\t50", sid},
+		{"DevTools 列名 + 空格", "wps_sid " + sid, sid},
+		{"空串", "   ", ""},
+		{"只有前缀", "wps_sid=", ""},
+	}
+	for _, c := range cases {
+		if got := NormalizeSID(c.in); got != c.want {
+			t.Errorf("%s: NormalizeSID(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// ValidateSID 必须容忍粘贴噪声：上游收到的 Cookie 只能是规整后的裸值。
+func TestValidateSIDAcceptsPastedCookie(t *testing.T) {
+	var gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"","data":{"items":[]}}`))
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.Base = srv.URL
+	if _, err := c.validateSID(NormalizeSID("Cookie: a=1; wps_sid=" + fakeSID + "; b=2")); err != nil {
+		t.Fatalf("validateSID: %v", err)
+	}
+	if want := CookieName + "=" + fakeSID; gotCookie != want {
+		t.Fatalf("Cookie = %q, want %q（噪声必须被剥掉）", gotCookie, want)
+	}
+}

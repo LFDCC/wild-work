@@ -27,6 +27,7 @@ import (
 	"wild-work/internal/ledger"
 	"wild-work/internal/login"
 	logincodearts "wild-work/internal/login_codearts"
+	"wild-work/internal/login_comate"
 	logingemini "wild-work/internal/login_gemini"
 	"wild-work/internal/login_glm"
 	loginlobsterai "wild-work/internal/login_lobsterai"
@@ -136,6 +137,10 @@ type App struct {
 	// 它不轮询 state 文件，而是经 CDP 从浏览器 Cookie 捕获凭据）。
 	muGLMLogin sync.Mutex
 	glmLogin   *loginglm.AutoSession
+
+	// WPS Comate 自动登录会话（同 GLM：CDP 从浏览器 Cookie 捕获 wps_sid）。
+	muComateLogin sync.Mutex
+	comateLogin   *logincomate.AutoSession
 
 	muOALogin sync.Mutex
 	oaLogin   *officeace.LoginSession
@@ -1655,7 +1660,9 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 // 同账号检测：wps_sid 与已入库账号逐字比对 —— 同一份 sid 重复添加不扩额度
 //（积分按 WPS 账号计），提示用户换账号而不是重复粘贴。
 func (a *App) SubmitComateSID(sid string) (string, string, error) {
-	s := strings.TrimSpace(sid)
+	// 容错：用户常把整段 Cookie / DevTools 表格一行 / 带引号的值一起粘进来，
+	// 这里先规整成裸值（否则报「sid 无效」，用户完全无从自查）。
+	s := comate.NormalizeSID(sid)
 	if s == "" {
 		return "", "", errors.New("wps_sid 不能为空")
 	}
@@ -1680,7 +1687,7 @@ func (a *App) SubmitComateSID(sid string) (string, string, error) {
 	ca := &auth.Auth{
 		Kind:        "comate",
 		UID:         uid,
-		Nickname:    "WPS 账号 " + uid[len(uid)-6:],
+		Nickname:    comateNickname(uid),
 		AccessToken: s,
 		// Cookie 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
 		ExpiresAt: comate.FarFutureExpiry(),
@@ -1694,6 +1701,78 @@ func (a *App) SubmitComateSID(sid string) (string, string, error) {
 	a.reloadAccounts()
 	a.afterAccountAdded(provider.Comate)
 	return uid, warn, nil
+}
+
+// comateNickname 账号展示名（uid 末尾 6 位足够区分同一台机器上的多个 WPS 账号）。
+func comateNickname(uid string) string {
+	if len(uid) <= 6 {
+		return "WPS 账号"
+	}
+	return "WPS 账号 " + uid[len(uid)-6:]
+}
+
+// StartComateAutoLogin 发起 WPS Comate 自动登录：拉起独立 profile 的浏览器打
+// WPS 登录页，用户登录后后台经 CDP 捕获 wps_sid，校验通过即落盘。
+//
+// 返回后立即进入 pending；前端轮询 GetComateAutoLoginStatus 获知结果。
+// 校验+落盘复用 SubmitComateSID —— 自动与手工两条入口共用同一份验证、
+// 同账号告警与日志纪律，不各写一份。
+func (a *App) StartComateAutoLogin() error {
+	a.muComateLogin.Lock()
+	defer a.muComateLogin.Unlock()
+	if a.comateLogin != nil {
+		if st, _ := a.comateLogin.Status(); st == "pending" {
+			return errors.New("已有 Comate 登录流程进行中，请先在浏览器完成登录或取消")
+		}
+	}
+	sess, err := logincomate.AutoLogin(func(sid string) (logincomate.Result, error) {
+		uid, warn, serr := a.SubmitComateSID(sid)
+		if serr != nil {
+			return logincomate.Result{}, serr
+		}
+		return logincomate.Result{UID: uid, Nickname: comateNickname(uid), Warn: warn}, nil
+	})
+	if err != nil {
+		return err
+	}
+	a.comateLogin = sess
+	return nil
+}
+
+// GetComateAutoLoginStatus 查询自动登录状态。
+// 返回 status（idle/pending/success/failed/cancelled）、错误信息与成功时的 uid。
+func (a *App) GetComateAutoLoginStatus() map[string]any {
+	a.muComateLogin.Lock()
+	sess := a.comateLogin
+	a.muComateLogin.Unlock()
+	if sess == nil {
+		return map[string]any{"status": "idle"}
+	}
+	status, err := sess.Status()
+	out := map[string]any{"status": status}
+	if err != nil {
+		out["error"] = err.Error()
+	}
+	if r, ok := sess.Result(); ok {
+		out["uid"] = r.UID
+		out["nickname"] = r.Nickname
+		if r.Warn != "" {
+			out["warning"] = r.Warn
+		}
+	}
+	return out
+}
+
+// CancelComateAutoLogin 取消自动登录并关闭浏览器。
+func (a *App) CancelComateAutoLogin() error {
+	a.muComateLogin.Lock()
+	sess := a.comateLogin
+	a.muComateLogin.Unlock()
+	if sess == nil {
+		return errors.New("没有进行中的 Comate 登录")
+	}
+	sess.Cancel()
+	return nil
 }
 
 // StartGLMAutoLogin 发起智谱清言自动登录：拉起独立 profile 的浏览器，
@@ -3890,6 +3969,24 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
+	})
+	// Comate 自动登录（CDP 捕获 wps_sid）：与 glm_auto 同款三段式。
+	mux.HandleFunc("POST /api/login/comate_auto", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.StartComateAutoLogin(); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, a.GetComateAutoLoginStatus())
+	})
+	mux.HandleFunc("GET /api/login/comate_auto_status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.GetComateAutoLoginStatus())
+	})
+	mux.HandleFunc("POST /api/login/comate_auto_cancel", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.CancelComateAutoLogin(); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("POST /api/account/checkin", func(w http.ResponseWriter, r *http.Request) {
