@@ -2223,79 +2223,142 @@ function cancelGLMLogin() {
 }
 
 // ---------- WPS Comate 登录（自动捕获 Cookie，手工粘贴为兜底） ----------
-// 自动路径与智谱清言同款：拉起独立 profile 的浏览器 → 用户在真实浏览器里登录 WPS →
-// CDP 轮询捕获 wps_sid。独立 profile 天然隔离，多账号逐个添加互不干扰。
-// 关键：捕获到 Cookie ≠ 登录完成（未登录态也会有预登录 Cookie），判据是后端校验
-// （GET /models，零 token）通过；校验不过继续等，故这里只认 status=success。
+// 扫码登录：二维码由**服务端**向 qr.wps.cn 申请，面板就地显示；手机 WPS 扫码确认后，
+// 服务端自己用 authcode 换 session Cookie 并落盘。全程不需要桌面/浏览器。
+//
+// 这是对「CDP 拉浏览器」方案的环境无关替换：CDP 只能拉起运行 wild-work 那台机器的
+// 浏览器（NAS 无桌面就永远弹不出来），而用户自己浏览器里的 wps_sid 受同源策略保护读不到。
 let comatePoll = null;
 
-// 打开 Comate 添加弹层：先问后端「这台机器能不能真弹出浏览器」。
-// 无桌面环境（NAS/docker/systemd）时自动登录物理上不可能成功 —— 浏览器只会开在跑
-// wild-work 的那台机器上，而不是用户当前打开面板的电脑上。此时直接隐藏自动区、
-// 展开手工区并说明原因，比让用户点完按钮只看到一句报错要好。
-async function openComateDialog() {
+// 打开 Comate 添加弹层：直接申请二维码（少点一次按钮）。
+function openComateDialog() {
   $("comateErr").textContent = "";
-  $("comateStatus").textContent = "点下面的按钮开始，无需手动复制 Cookie。";
   $("comateManual").classList.add("hidden");
-  $("comateNoGui").classList.add("hidden");
-  $("comateAuto").classList.remove("hidden");
   $("comateSidInput").value = "";
+  $("comateQrImg").classList.add("hidden");
+  $("comateQrEmpty").classList.remove("hidden");
+  $("comateQrStatus").textContent = "正在申请二维码…";
   $("comateOverlay").classList.remove("hidden");
-  try {
-    const st = await api("/api/login/comate_auto_status");
-    if (st && st.gui === false) {
-      $("comateAuto").classList.add("hidden");
-      $("comateNoGui").classList.remove("hidden");
-      $("comateNoGuiHint").textContent = st.gui_hint || "";
-      $("comateManual").classList.remove("hidden");
-      stopComatePoll();
-      api("/api/login/comate_auto_cancel", {}).catch(() => {});
-    }
-  } catch (e) { /* 状态查询失败不影响手工路径 */ }
+  loadComateBrowserInfo();
+  startComateQr();
 }
 
-function startComateLogin() {
+// loadComateBrowserInfo 问后端「本机浏览器登录」这条路是否可用。
+// 没配 login.comate_browser_cdp ⇒ 整块隐藏（配都不配就摆按钮，点了只会报错）；
+// 配了但端口不通 ⇒ 仍显示，但把原因写在 hint 里（最常见是浏览器没带
+// --remote-debugging-port 启动，静默隐藏会让人以为功能不存在）。
+async function loadComateBrowserInfo() {
+  const box = $("comateBrowser");
+  box.classList.add("hidden");
+  try {
+    const info = await api("/api/login/comate_browser_info");
+    if (!info || !info.configured) return;
+    box.classList.remove("hidden");
+    $("comateBrowserHint").textContent = info.available
+      ? `已连接到本机浏览器（${info.endpoint}）`
+      : `未连接到 ${info.endpoint}：${info.hint || "浏览器没有开启调试端口"}`;
+    $("btnComateBrowserStart").disabled = !info.available;
+  } catch (e) { /* 探测失败按未配置处理 */ }
+}
+
+// startComateBrowser 接管本机浏览器：后端开标签页到 WPS 登录页，这里轮询 Cookie 结果。
+function startComateBrowser() {
+  stopComatePoll();
   $("comateErr").textContent = "";
-  $("comateStatus").textContent = "正在启动浏览器…";
-  $("comateManual").classList.add("hidden");
-  $("comateOverlay").classList.remove("hidden");
-  api("/api/login/comate_auto", {})
-    .then(() => {
-      $("comateStatus").textContent = "浏览器已打开，请在其中登录 WPS 账号…";
-      startComatePoll();
+  $("comateBrowserStatus").textContent = "正在连接浏览器并打开登录页…";
+  api("/api/login/comate_browser", {})
+    .then((st) => {
+      renderComateBrowser(st);
+      startComatePoll("/api/login/comate_browser_status");
     })
     .catch((e) => {
-      // 拉不起浏览器（无桌面环境、未装 Edge/Chrome）→ 直接把人引到手工方式
-      $("comateStatus").textContent = "";
-      $("comateErr").textContent = (e.message || "启动失败") + "（可展开下方手工方式）";
+      $("comateBrowserStatus").textContent = "";
+      $("comateErr").textContent = (e.message || "连接浏览器失败") + "（可展开下方手工方式）";
       $("comateManual").classList.remove("hidden");
     });
 }
 
-function startComatePoll() {
+function renderComateBrowser(st) {
+  if (!st) return;
+  if (st.state === "success") {
+    $("comateBrowserStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+  } else {
+    $("comateBrowserStatus").textContent = st.hint || "请在浏览器里完成登录…";
+  }
+}
+
+// startComateQr 申请（或重新申请）一张二维码并开始轮询扫码状态。
+function startComateQr() {
   stopComatePoll();
+  $("comateErr").textContent = "";
+  $("comateQrStatus").textContent = "正在申请二维码…";
+  $("comateQrImg").classList.add("hidden");
+  $("comateQrEmpty").classList.remove("hidden");
+  api("/api/login/comate_qr", {})
+    .then((st) => {
+      renderComateQr(st);
+      startComatePoll();
+    })
+    .catch((e) => {
+      // 申请不到二维码（网络不通/上游变更）→ 直接把人引到手工方式
+      $("comateQrStatus").textContent = "";
+      $("comateQrEmpty").textContent = "二维码申请失败";
+      $("comateErr").textContent = (e.message || "申请二维码失败") + "（可展开下方手工方式）";
+      $("comateManual").classList.remove("hidden");
+    });
+}
+
+// renderComateQr 把后端状态画到弹层上（二维码图片、扫码进度）。
+function renderComateQr(st) {
+  if (!st) return;
+  if (st.qr) {
+    const img = $("comateQrImg");
+    // 上游每次换新二维码都是一个新地址，直接按值比较即可判断是否要重载。
+    if (img.getAttribute("src") !== st.qr) img.setAttribute("src", st.qr);
+    img.classList.remove("hidden");
+    $("comateQrEmpty").classList.add("hidden");
+  }
+  if (st.state === "scanned") {
+    $("comateQrStatus").textContent = st.hint || "已扫码，请在手机 WPS 上确认登录";
+  } else if (st.state === "pending") {
+    $("comateQrStatus").textContent = "用手机 WPS Office「扫一扫」扫描二维码";
+  }
+}
+
+let comatePollPath = "/api/login/comate_qr_status";
+
+function startComatePoll(path) {
+  stopComatePoll();
+  comatePollPath = path || "/api/login/comate_qr_status";
   comatePoll = setInterval(async () => {
     try {
-      const st = await api("/api/login/comate_auto_status");
-      if (st.status === "success") {
+      const st = await api(comatePollPath);
+      if (comatePollPath === "/api/login/comate_qr_status") renderComateQr(st);
+      else renderComateBrowser(st);
+      if (st.state === "success") {
         stopComatePoll();
-        $("comateStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+        if (comatePollPath === "/api/login/comate_qr_status") {
+          $("comateQrStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+        } else {
+          $("comateBrowserStatus").textContent = `✅ 已添加账号：${st.nickname || st.uid}`;
+        }
         // toast 是单槽位（后一条覆盖前一条），故告警与成功文案合并成一条：
         // 同账号告警更重要（用户可能白加了），放前面。
         toast(st.warning ? `${st.warning} —— ${st.nickname || st.uid} 已添加` : "WPS Comate 账号已添加");
         await loadState();
         refreshFees();
         setTimeout(() => $("comateOverlay").classList.add("hidden"), 1200);
-      } else if (st.status === "failed") {
+      } else if (st.state === "failed") {
         stopComatePoll();
-        $("comateStatus").textContent = "";
+        $("comateQrStatus").textContent = "";
+        $("comateBrowserStatus").textContent = "";
         $("comateErr").textContent = (st.error || "登录失败") + "（可展开下方手工方式）";
         $("comateManual").classList.remove("hidden");
-      } else if (st.status === "cancelled" || st.status === "idle") {
+      } else if (st.state === "cancelled" || st.state === "idle") {
         stopComatePoll();
       }
     } catch (e) { /* 忽略瞬时错误 */ }
-  }, 2000);
+  }, 1500);
 }
 
 function stopComatePoll() {
@@ -2305,7 +2368,8 @@ function stopComatePoll() {
 function cancelComateLogin() {
   stopComatePoll();
   // 没有进行中的会话时后端会回 400，属正常情况，静默即可。
-  api("/api/login/comate_auto_cancel", {}).catch(() => {});
+  api("/api/login/comate_qr_cancel", {}).catch(() => {});
+  api("/api/login/comate_browser_cancel", {}).catch(() => {});
   $("comateOverlay").classList.add("hidden");
 }
 
@@ -3610,14 +3674,11 @@ function bind() {
   $("btnClineSubmit").onclick = submitClineKey;
   $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
   $("btnAddComate").onclick = () => openComateDialog();
-  $("btnComateAuto").onclick = startComateLogin;
+  $("btnComateQrStart").onclick = () => startComateQr();
+  $("btnComateBrowserStart").onclick = () => startComateBrowser();
   $("btnComateSubmit").onclick = submitComateSID;
   $("btnComateCancel").onclick = cancelComateLogin;
   $("btnComateToggleManual").onclick = () => $("comateManual").classList.toggle("hidden");
-  // 无桌面部署下唯一能真正「弹出窗口」的办法：由前端 window.open 在用户自己的浏览器里
-  // 开登录页（与 Loomy 引导页同一思路）。服务器端 CDP 拉浏览器在没有桌面的机器上不可能成功。
-  $("btnComateOpenLogin").onclick = () =>
-    window.open("https://account.wps.cn/login", "_blank", "noopener,noreferrer");
   $("btnAddOfficeAce").onclick = () => promptLogin("officeace");
   $("btnAddMiniMax").onclick = () => promptLogin("minimax");
   $("btnAddLobsterAI").onclick = () => promptLogin("lobsterai");

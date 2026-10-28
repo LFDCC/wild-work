@@ -428,3 +428,42 @@ func TestValidateSIDAcceptsPastedCookie(t *testing.T) {
 		t.Fatalf("Cookie = %q, want %q（噪声必须被剥掉）", gotCookie, want)
 	}
 }
+
+// TestFetchModelsEmptyDirKeepsCache 锁死「空目录不得清空面板」。
+//
+// 实测事故：面板里加了第二个 WPS 账号（该账号 Comate 未开通 ⇒ /models 恒返回
+// items=[]），handler 的模型缓存是按单个账号 Pick 出来的，一次 Pick 命中空账号，
+// 整个 comate 渠道的 9 个模型瞬间归零、要等 5 分钟负缓存才恢复。
+// 修法：空目录一律回落到已知缓存；缓存也空时返回错误（日志里能看出是账号没开通）。
+func TestFetchModelsEmptyDirKeepsCache(t *testing.T) {
+	full := `{"code":0,"data":{"items":[{"display_name":"GLM-5.3","name":"673940725/zhipu/glm-5.3//public"}]}}`
+	empty := `{"code":0,"data":{"items":[],"total":0}}`
+	serve := full
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(serve))
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.Base = srv.URL
+	a := fakeAuth()
+	if mis, err := c.FetchModels(a); err != nil || len(mis) != 1 {
+		t.Fatalf("首次拉取: err=%v n=%d", err, len(mis))
+	}
+
+	serve = empty // 上游改口：这个账号没有模型
+	mis, err := c.FetchModels(a)
+	if err != nil {
+		t.Fatalf("空目录不得报错（应回落到缓存）: %v", err)
+	}
+	if len(mis) != 1 || mis[0].ID != "673940725/zhipu/glm-5.3//public" {
+		t.Fatalf("空目录应回落到缓存，实际 n=%d %+v", len(mis), mis)
+	}
+
+	// 缓存也空 ⇒ 必须报错（否则面板静默变空、日志无线索）。
+	c2 := New()
+	c2.Base = srv.URL
+	if _, err := c2.FetchModels(a); err == nil {
+		t.Fatal("冷启动遇到空目录应返回错误")
+	}
+}

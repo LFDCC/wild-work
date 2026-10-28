@@ -358,38 +358,42 @@
     <div class="modal-title">添加 WPS Comate 账号</div>
     <div class="modal-body settings-body">
 
-      <!-- 无桌面环境的部署（NAS / docker / systemd）：CDP 只能拉起**服务器那台机器**的
-           浏览器，那里没有桌面，窗口永远出不来。这里换成 Loomy 引导页的思路 ——
-           窗口由前端 window.open 打开，落在用户自己的屏幕上，所以远程访问也能看见。 -->
-      <div class="glm-warn hidden" id="comateNoGui">
-        <div class="glm-warn-title">💡 登录页会开在<b>你自己的浏览器</b>里</div>
-        <ol>
-          <li>点下面的按钮，用你当前这台电脑的浏览器新开一个 WPS 登录页（不会有服务器端弹窗）。</li>
-          <li>登录完成后把 <code>wps_sid</code> 复制回来粘贴到下面，约 30 秒，之后长期有效。</li>
+      <!-- 扫码登录（推荐）：二维码由**服务端**申请，手机确认后服务端自己换出 wps_sid。
+           不要求运行 wild-work 的机器有桌面或浏览器，NAS / docker / systemd 一样能用；
+           也绕开了同源策略（用户浏览器读不到 wps.cn 的 Cookie，服务端自己登录就无所谓）。 -->
+      <div class="cfg-section" id="comateQr">
+        <div class="cfg-heading">扫码登录（推荐）</div>
+        <ol class="glm-steps">
+          <li>用手机上的 <b>WPS Office</b> 扫下方二维码。</li>
+          <li>手机上点「确认登录」，这里会自动完成，<b>不需要复制任何 Cookie</b>。</li>
+          <li>二维码由服务器自己申请、自己换登录态，所以对 NAS / 服务器部署同样有效。</li>
         </ol>
-        <div class="hint" style="margin-top:6px">
-          <button class="btn small primary" id="btnComateOpenLogin">打开 WPS 登录页</button>
+        <div class="comate-qr-box">
+          <img id="comateQrImg" class="comate-qr hidden" alt="WPS 登录二维码" width="180" height="180">
+          <div id="comateQrEmpty" class="comate-qr-empty">正在申请二维码…</div>
         </div>
-        <div class="hint" id="comateNoGuiHint" style="margin-top:6px"></div>
-        <div class="hint" style="margin-top:4px">
-          为什么还要复制一次：浏览器不允许别的网站读取 WPS 域下的登录 Cookie（同源策略）。
-          只有让「服务器自己开浏览器」才能自动读，而那需要一台有桌面的机器。
+        <div class="hint" id="comateQrStatus">用手机 WPS Office「扫一扫」扫描二维码</div>
+        <div class="hint" style="margin-top:8px">
+          <button class="btn small primary" id="btnComateQrStart">重新申请二维码</button>
         </div>
+        <div class="hint">每个账号单独扫一次；二维码约 2 分钟有效，过期会自动换新。</div>
       </div>
 
-      <!-- 自动路径：CDP 捕获 wps_sid（普通用户走这条，不用碰 F12） -->
-      <div class="cfg-section" id="comateAuto">
-        <div class="cfg-heading">自动登录（推荐）</div>
+      <!-- 用本机浏览器登录：接管你自己开着调试端口的 Chrome/Edge，登录页开在你熟悉的
+           浏览器里，登录完自动读 Cookie。仅在 config.json 配了 login.comate_browser_cdp
+           且该端口确实在监听时才显示（否则是给了按钮点了必失败，比不显示更糟）。 -->
+      <div class="cfg-section hidden" id="comateBrowser">
+        <div class="cfg-heading">用本机浏览器登录</div>
         <ol class="glm-steps">
-          <li>点「一键登录」后会打开一个<b>独立的浏览器窗口</b>（不影响你日常浏览器的登录态）。</li>
-          <li>在那个窗口里登录 WPS 账号（手机号 / 微信 / 扫码均可）。</li>
-          <li>登录完成后<b>无需任何操作</b>，这里会自动捕获 wps_sid 并添加账号。</li>
+          <li>点下面的按钮，会在你<b>已经打开的浏览器</b>里新开一个 WPS 登录页标签。</li>
+          <li>在那个标签里输入账号密码（或用手机扫码）完成登录。</li>
+          <li>登录成功后本页自动读取该浏览器的 Cookie，<b>无需复制</b>。</li>
         </ol>
-        <div class="hint" id="comateStatus">点下面的按钮开始，无需手动复制 Cookie。</div>
-        <div class="hint" style="margin-top:6px">
-          <button class="btn small primary" id="btnComateAuto">一键登录</button>
+        <div class="hint" id="comateBrowserHint"></div>
+        <div class="hint" style="margin-top:8px">
+          <button class="btn small" id="btnComateBrowserStart">在浏览器中登录</button>
         </div>
-        <div class="hint">每个账号使用独立的浏览器环境，可以连续添加多个 WPS 账号，互不干扰。</div>
+        <div class="hint" id="comateBrowserStatus"></div>
       </div>
 
       <!-- 关键约束：积分按 WPS 账号计，同账号多 sid 不扩额度。 -->

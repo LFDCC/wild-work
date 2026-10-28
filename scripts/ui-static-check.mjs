@@ -743,25 +743,29 @@ check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[
   check("模型表空态占位行跨 7 列", document.getElementById("tblModelstbody").innerHTML.includes('colspan="7"'));
 }
 
-// ---- 场景 1.8：Comate 自动登录在无桌面部署下的降级（R131 追加）----
-// 起因：分支构建部署到 NAS 后，用户点「一键登录」什么也没发生。原因是 CDP 拉起的是
-// **运行 wild-work 那台机器**的浏览器，而 NAS 没有桌面。修法不是把报错写漂亮，而是
-// 打开弹层时就问后端「能不能弹窗」，不能就直说原因并展开手工区。
+const regexOk = (re) => re.test(raw);
+
+// ---- 场景 1.8：Comate 登录三条路径（R132）----
+// 起因：分支构建部署到 NAS 后，用户点「一键登录」什么也没发生 —— CDP 拉起的是
+// **运行 wild-work 那台机器**的浏览器，而 NAS 没有桌面。结论不是把报错写漂亮，
+// 而是换一条与部署环境无关的登录路径：服务端申请二维码（扫码），外加可选的
+// 「接管本机浏览器」（用户自己开调试端口时才有）。
 {
   const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
-  check("弹层带「没有桌面」的说明块", html.includes('id="comateNoGui"'), html.length);
-  check("说明块里预留后端原因占位", html.includes('id="comateNoGuiHint"'));
-  check("打开弹层先查 gui 能力，而不是直接发启动请求",
-    /async function openComateDialog/.test(raw) && /gui === false/.test(raw));
-  check("openComateDialog 走了状态接口", /openComateDialog[\s\S]{0,900}\/api\/login\/comate_auto_status/.test(raw));
-  check("无 GUI 时顺带清掉可能残留的会话", /openComateDialog[\s\S]{0,1200}comate_auto_cancel/.test(raw));
-  check("手工入口默认展开的条件挂在 gui=false 分支上",
-    /gui === false[\s\S]{0,500}comateManual"\)\.classList\.remove\(\"hidden\"\)/.test(raw));
-  // 用户对照点：Loomy 的登录是「前端 window.open 一个引导页」，窗口落在用户屏幕上，
-  // 远程访问也能看见。Comate 在无桌面部署下必须做到同样的可见反馈，否则又是「点了没反应」。
-  check("无桌面时给出「在你浏览器打开登录页」的入口", html.includes('id="btnComateOpenLogin"'));
-  check("该入口由前端 window.open 打开，而不是服务端拉浏览器",
-    /btnComateOpenLogin"\)\.onclick[\s\S]{0,240}window\.open\(/.test(raw));
+  check("弹层带扫码区（服务端申请二维码）", html.includes('id="comateQrImg"') && html.includes('id="btnComateQrStart"'));
+  check("弹层带「用本机浏览器登录」区（默认隐藏，由能力探测决定是否显示）",
+    html.includes('id="comateBrowser"') && /<div class="cfg-section hidden" id="comateBrowser"/.test(html));
+  check("浏览器入口按钮由前端轮询后端状态", regexOk(/btnComateBrowserStart"\).onclick[\s\S]{0,120}startComateBrowser\(\)/));
+  check("打开弹层先探测浏览器能力，而不是先发登录请求",
+    /async function loadComateBrowserInfo/.test(raw) && /openComateDialog[\s\S]{0,400}loadComateBrowserInfo/.test(raw));
+  check("未配置调试端口时整块隐藏（不摆点了必失败的按钮）",
+    /function loadComateBrowserInfo[\s\S]{0,900}!info\.configured\) return/.test(raw));
+  check("配置了但端口不通时给出原因并禁用按钮",
+    /info\.available[\s\S]{0,300}disabled = !info\.available/.test(raw));
+  check("扫码轮询走后端状态接口", /comatePollPath = "\/api\/login\/comate_qr_status"/.test(raw));
+  check("关闭弹层同时取消扫码与浏览器两条会话",
+    /cancelComateLogin[\s\S]{0,400}comate_qr_cancel[\s\S]{0,200}comate_browser_cancel/.test(raw));
+  check("手工兜底仍在（整段 Cookie 也能粘）", html.includes('id="comateSidInput"') && html.includes('id="btnComateToggleManual"'));
 }
 
 // ---- 输出 ----

@@ -169,6 +169,15 @@ type Config struct {
 		// 随机端口无法预建隧道，故允许写死一个端口。留空/0 保持随机（更省心，
 		// 但异地浏览器只能用面板的「粘贴回调地址」兜底）。
 		LobsterAICallbackPort int `json:"lobsterai_callback_port,omitempty"`
+
+		// ComateBrowserCDP 「用本机浏览器登录 WPS」的 CDP 调试地址，
+		// 形如 http://127.0.0.1:9222。留空 = 面板不显示该入口。
+		//
+		// 为什么需要配置而不能自动探测：调试端口是**用户自己**给浏览器开的
+		// （chrome --remote-debugging-port=9222），端口与是否开启都归用户决定；
+		// 自动扫描本机端口既不可靠也越权。配置好之后，用户在熟悉的浏览器里
+		// 登录一次，wild-work 直接读到 wps_sid，不必再复制粘贴 Cookie。
+		ComateBrowserCDP string `json:"comate_browser_cdp,omitempty"`
 	} `json:"login"`
 
 	// Compat 三接口兼容层（OpenAI Responses / Anthropic Messages）配置。

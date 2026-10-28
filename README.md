@@ -44,7 +44,7 @@
 | Loomy（讯飞） | `loomy/*` | 从客户端导入 | 导入型渠道：凭据从**本机已登录的官方客户端**读取；上游无 refresh 端点，session 约 14 天，到期需重新导入 |
 | 智谱清言 | `glm/*` | CDP 自动捕获 | **网页版私有接口**（非开放平台），凭据是浏览器 Cookie 里的 `chatglm_refresh_token`；新账号须在智谱清言 App 登录一次才发放初始额度 |
 | Cline | `cline-free/*`（兼容旧写法 `cline/*`） | 粘贴官方 API Key | 只调度免费模型；Key 不过期、不轮换；官方额度按账号计，多把 Key 须来自**多个独立账号**（同账号多 Key 共享一份额度，面板会自动识别并提示） |
-| WPS Comate | `comate/*` | CDP 自动捕获（手工粘贴兜底） | WPS 网页版模型代理（`comate.wps.cn`）：点「一键登录」拉起独立 profile 浏览器，登录 WPS 后由 CDP 自动捕获 Cookie 里的 `wps_sid`（**Cookie 一出现 ≠ 登录完成**，判据是上游 `/models` 校验通过；无桌面环境时可展开「手工方式」粘贴整段 Cookie）；模型列表由上游 `/models` 动态下发（GLM/DeepSeek/MiniMax/MiMo 等，上下文窗口为上游官方声明）；**上游无余额查询接口** ⇒ 账号卡片的积分显示「不适用」，消耗改由每次回答的 `usage.credits` 逐请求累计（平台表「今日消耗」列以 `(精)` 标注，见 R130）；积分按 WPS 账号计，多份 sid 须来自**多个独立账号**（面板会自动识别并提示） |
+| WPS Comate | `comate/*` | 扫码登录 / 本机浏览器接管 / 手工粘贴 | WPS 网页版模型代理（`comate.wps.cn`）：**扫码登录**为默认路径（服务端向 `qr.wps.cn` 申请二维码，面板就地显示，手机 WPS 扫码确认后由服务端换出 Cookie —— 无需桌面、无需浏览器，NAS/docker 可用；**Cookie 一出现 ≠ 登录完成**，判据是上游 `/models` 校验通过）；有桌面的本机部署可配置 `login.comate_browser_cdp` 接管**已在跑**的浏览器（`--remote-debugging-port`）直接读登录态；任何环境都能展开「手工方式」粘贴 `wps_sid`（整段 Cookie 头也直接吃）；模型列表由上游 `/models` 动态下发（GLM/DeepSeek/MiniMax/MiMo 等，上下文窗口为上游官方声明）；**上游无余额查询接口** ⇒ 账号卡片的积分显示「不适用」，消耗改由每次回答的 `usage.credits` 逐请求累计（平台表「今日消耗」列以 `(精)` 标注，见 R130）；积分按 WPS 账号计，多份 sid 须来自**多个独立账号**（面板会自动识别并提示） |
 | 华为云果办 OfficeAce | `officeace/*` | 自助 OAuth／从客户端导入 | 华为云 AgentArts 模型网关；两条添加路径：主按钮自助 OAuth（华为云授权码 + PKCE + DPoP，跨平台），次按钮读本机 OfficeAce 桌面端凭据（临时 AK/SK 经 DPAPI 解密，仅 Windows）；对话走不过期的网关 Basic 凭据，每日签到的临时凭据约 2 小时有效并自动续期 |
 | OpenCodeZen | `oczen/*` | 无需账号 | 匿名免费通道，内置 `public` 凭证即可调用 Zen 免费模型 |
 | Kilo | `kilo/*` | 无需账号 | 免密免费池 |
@@ -104,7 +104,7 @@
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「+ WorkBuddyCN」/「+ WorkBuddyAI」/「+ TraeWork」/「+ QoderCN」/「+ QoderCOM」/「+ 千问办公」/「+ 智谱清言」/「+ OfficeAce」添加账号
-   （OpenCodeZen 无需添加账号，启动即已就绪；Cline 无需登录流程，直接粘贴 API Key；WPS Comate 点「一键登录」由 CDP 自动捕获 Cookie，无桌面环境时可粘贴整段 Cookie 兜底）
+   （OpenCodeZen 无需添加账号，启动即已就绪；Cline 无需登录流程，直接粘贴 API Key；WPS Comate 默认走「扫码登录」（手机 WPS 扫码确认即可，无桌面环境也能用），也可粘贴整段 Cookie 兜底）
 5. 根据下方配置说明接入你的 AI 客户端
 
 ### 托盘菜单
