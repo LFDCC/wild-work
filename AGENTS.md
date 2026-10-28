@@ -45,7 +45,7 @@
 
 ---
 
-## 1. 决议项索引（R1–R126）
+## 1. 决议项索引（R1–R127）
 
 **全文（含证据链、反例、已知限制）见 [`docs/决议项.md`](docs/决议项.md)** —— 改动相关代码前必读对应条目。
 
@@ -158,6 +158,7 @@
 | R124 | **`/v1/models` 补 `supported_parameters` 与 `reasoning.mandatory`（合入外部 PR #189，作者 reno；**剔掉了本仓并未实现的 `include_reasoning`**）**（2026-10-22）：出站模型面按**已声明能力**导出 `supported_parameters`（`SupportsTools` ⇒ `tools`/`tool_choice`；有思考档位 ⇒ `reasoning`/`reasoning_effort`），`reasoning.mandatory = !*CanDisableThinking` **且仅在 `CanDisableThinking != nil` 时出现**，两者皆无 ⇒ 整个字段缺席（R49「只透传声明，绝不编造」在模型元数据面的落地）。与 PR 原样的唯一差异：`include_reasoning` 全仓**零处理点**（入站只吃 `reasoning_effort` 与 Responses 的 `reasoning` 对象）⇒ 宣告一个我们不接的参数会让客户端照它发并被静默忽略，故剔除并加护栏断言。决议号按 **R123** 从 PR 自登记的 R122 顺延。详见 [`docs/决议项.md`](docs/决议项.md) R124 |
 | R125 | **ZCode 出站 `system` 必须恰好 3 块（调用方 system 合并进第 3 块，绝不新开第 4 块）+ 补 `metadata.user_id`**（2026-10-23 实测，magpie #343 判定）：zcode 恒 `405 {"code":3012}` 的根因是上游 Start Plan 准入按「三个 system 块」判，调用方的 system 要追加进第 3 块末尾，旧实现放成独立第 4 块。修法 `buildIdentityBlocks` 合并（`block[2] = environmentSection + "\n\n" + callerSystem`，缓存断点仍只打最后一块），并在 `buildMessagesBody` 补 `metadata.user_id = {device_id, account_uuid:"", session_id:""}`（`device_id` 必须与 `X-Device-Mid` 同值；不是 3012 根因但四个参考实现全发）。详见 [`docs/决议项.md`](docs/决议项.md) R125 |
 | R126 | **OpenCodeZen 合成的 `ses_` 时间戳段必须落在「今日 −30 天」窗口内**（2026-10-25 起上游校验时间合理性）：超窗回 **429 `FreeUsageLimitError`**（与真实配额耗尽同报文，极难排障）。旧实现哈希直派生落在 1970 年代 ⇒ 必被拒。修法 `descendingTimePart(now, hash)` 显式收 `now`，哈希**只挑窗口内偏移**（30 天）、时间锚定**今日 UTC 零点**（同信号一天内稳定，保 prompt cache 亲和），末三位仍恒 `ffe`。详见 [`docs/决议项.md`](docs/决议项.md) R126 |
+| R127 | **粘性路由的轮换阈值可配（`config.server.sticky_max_requests`，默认 50），语义不变、只把包内硬编码挪成配置**（2026-10-22，PR #191，作者 wzwjustdoit）：① `internal/config/config.go` 的 `Server` 段新增 `StickyMaxRequests int`（json `sticky_max_requests`）+ `const DefaultStickyMaxRequests = 50`，`Default()` 预置，`normalize()` 对 `<=0` 记 `WARN config: server.sticky_max_requests=%d invalid, fallback=%d` 并回退默认——**只在内存回退，加载时不写盘**（不变量 5：老配置缺字段用默认值即可，不得因为读一次配置就把文件改写一遍，否则配置漂移会让用户看不出哪些是默认值）；② `internal/server/handler.go` 的 `Config` 增 `StickyMaxRequests int`（`0` = 默认 50，`NewHandler` 里补），`pickWithSticky` 删除 `const defaultMaxReqs = 50`，改用 `h.cfg.StickyMaxRequests`（含日志），`cmd/wild-work/main.go` 从 `cfg.Server` 透传；③ **粘性语义一字未改**（R29 / 不变量 11）：仍是「连续成功 N 次或遇冷却/禁用/登录态失效/模型级冷却才换号」，不引入时间窗口、不引入按量轮换，`stickySuccess`/`stickyClear` 行为不变。**为什么值得进**：`maxReqs` 是唯一写死的策略常量，与 `upstream.timeout_seconds`、`server.max_request_body_mb` 同类（用户机器/上游节奏差异大，50 对小号池偏大、对缓存敏感场景偏小）。**回归**：`internal/config/config_test.go` 的 `TestStickyMaxRequestsLegacyConfigDefaultsWithoutWriting`（缺字段用默认 + `Load` 前后文件字节完全相等 + `Save` 后才写入）、`TestStickyMaxRequestsExplicitValue`、`TestStickyMaxRequestsInvalidFallsBackWithWarning`（`0`/`-3` 各一子例：回退默认 + 日志含可检索前缀 + 不写盘）、`internal/server/sticky_max_requests_test.go` 的 `TestStickyMaxRequestsFromConfig`（阈值 2 时第二次即换号、计数重建后仍用 2）、`TestStickyMaxRequestsDefaultForLegacyHandlerCall`（`NewHandler(Config{})` 回落 50）。`go build ./... && go vet ./... && go test ./...` 全绿。**已知限制**：阈值是**进程内**全局值（改配置需重启或走面板热更新链路，本 PR 未接热更新）；`stickyEntry.maxReqs` 在建记录时快照，运行中改配置只影响**新**记录（旧记录仍按旧值跑到耗尽），这是刻意的——避免热更新把正在跑的粘性链路随机打断 |
 
 > ⚠️ **R71 附带的实测纪律**（也是 §0.1 的来源）：上游校验的是**头族齐全**而非单点
 > （只补 `X-Conversation-ID` 仍被拒）；且 `X-Conversation-ID` 的**取值形态不被校验**
@@ -194,7 +195,8 @@
 8. 上游 HTTP ≥400 错误直接透传原始响应，不包装
 9. 定价缓存持久化到 `data/pricing-cache.json`，启动加载，超 1h 自动刷新
 10. 无桌面 Linux 必须 `--no-tray`，不带参数 panic 直接 exit 提示
-11. **粘性路由**：`pickWithSticky` 优先复用上次账号，直至连续成功请求达 50 次或遭遇错误冷却。成功时 `stickySuccess` 递增计数，错误时 `stickyClear` 清除粘性记录。不使用 credits 阈值（pool 中余额是 stale 数据）。
+11. **粘性路由**：`pickWithSticky` 优先复用上次账号，直至连续成功请求达**阈值**（`config.server.sticky_max_requests`，默认 50，R127）或遭遇错误冷却。成功时 `stickySuccess` 递增计数，错误时 `stickyClear` 清除粘性记录。不使用 credits 阈值（pool 中余额是 stale 数据）。
+    - 阈值是**唯一**可配项，语义未变（仍是「连续成功 N 次后换号」，不是按时间/按量）；非法值（`<=0`）在 `config.normalize()` 回退默认并记 `WARN config: server.sticky_max_requests=`，**加载时不主动写盘**（老配置缺字段 ⇒ 用默认值，不产生配置漂移）。
 12. **`internal/server` 主链路不得被绕过**：`POST /v1/chat/completions` 与 `GET /v1/models` 由内层直接服务，`internal/gateway` 只接管 `/v1/responses`、`/v1/messages`、`/v1/messages/count_tokens`。
 13. **兼容层调用内层只能经 `Gateway.call()`**（`io.Pipe`），调用方读完必须 `res.Close()`，否则内层 goroutine 可能阻塞在 Write 上泄漏。
 14. **`pipeRW.Flush()` 为空操作是刻意的**：`io.Pipe` 无缓冲，Write 即送达；不要改成缓冲 + 定时 flush。
@@ -438,7 +440,7 @@ bash scripts/probe-dump.sh summarize                # 汇总各渠道 usage 字�
 | [README.md](README.md) | 用户文档 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发者文档（面向 AI Agent） |
 | [AGENTS.md](AGENTS.md) | **本文件**：纪律 + 决议索引 + 关键不变量 + 构建发版 |
-| [docs/决议项.md](docs/决议项.md) | **R1–R126 决议全文**（证据链、反例、已知限制） |
+| [docs/决议项.md](docs/决议项.md) | **R1–R127 决议全文**（证据链、反例、已知限制） |
 | [docs/渠道接入备忘.md](docs/渠道接入备忘.md) | 各渠道协议要点、凭据模型、已知限制与踩坑 |
 | [docs/接口参考.md](docs/接口参考.md) | 面板区块规划 + 管理 API 全量清单 |
 | [docs/模型降级链定义.md](docs/模型降级链定义.md) | **模型降级链的唯一权威定义**：三维归因、错误类型全量归属、两条触发路径、三条硬规则、已知限制（R94） |
