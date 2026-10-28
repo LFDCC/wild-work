@@ -546,22 +546,30 @@ func asLoopGuardErr(err error, target **loopguard.Error) bool {
 // R107 每日额度逐笔到期（2026-10-20 生产实录驱动）
 // ---------------------------------------------------------------------------
 
-// billsFixture 一段实测形状的积分流水（2026-10-20 抓自 RaccoonAddison）。
+// billsFixture 一段实测形状的积分流水（2026-10-20 抓自 RaccoonAddison，日期已按当前时刻顺移）。
 // 三种 biz_type 都在：daily_grant 带 expire_at，daily_expire / desktop 不带。
-const billsFixture = `{"code":0,"message":"success","data":{"items":[
+//
+// ⚠ 日期不得写死在过去：fetchDailyGrants 会剔除已到期的发放，写死的旧日期会让
+// 「在效发放」恒为 0（2026-10-28 实测：整包跑此处变红）。相对当前时刻留 7 天窗口。
+func billsFixtureJSON() string {
+	// 以「今天」为基准生成三笔在效发放 + 一笔过期的 daily_expire + 一笔 desktop + 一笔补偿。
+	day := func(d int) string { return time.Now().AddDate(0, 0, d).Format("2006-01-02") }
+	ts := func(d int, hms string) string { return day(d) + hms + "+08:00" }
+	return `{"code":0,"message":"success","data":{"items":[
  {"bill_id":"b1","client_type":"web","event_name":"每日积分发放","biz_type":"daily_grant","points":300,
-  "created_at":"2026-10-20T08:37:00+08:00","grant_at":"2026-10-20T00:00:00+08:00","expire_at":"2026-10-26T23:59:59+08:00"},
+  "created_at":"` + ts(0, "T08:37:00") + `","grant_at":"` + ts(0, "T00:00:00") + `","expire_at":"` + ts(6, "T23:59:59") + `"},
  {"bill_id":"b2","client_type":"web","event_name":"每日积分到期清零","biz_type":"daily_expire","points":-200,
-  "created_at":"2026-10-19T23:59:59+08:00","grant_at":"2026-10-13T00:00:00+08:00","expire_at":"2026-10-19T23:59:59+08:00"},
+  "created_at":"` + ts(-1, "T23:59:59") + `","grant_at":"` + ts(-7, "T00:00:00") + `","expire_at":"` + ts(-1, "T23:59:59") + `"},
  {"bill_id":"b3","client_type":"web","event_name":"每日积分发放","biz_type":"daily_grant","points":300,
-  "created_at":"2026-10-19T08:37:00+08:00","grant_at":"2026-10-19T00:00:00+08:00","expire_at":"2026-10-25T23:59:59+08:00"},
+  "created_at":"` + ts(-1, "T08:37:00") + `","grant_at":"` + ts(-1, "T00:00:00") + `","expire_at":"` + ts(5, "T23:59:59") + `"},
  {"bill_id":"b4","client_type":"desktop","event_name":"桌面端 LLM 对话消耗","biz_type":"desktop","points":-2,
-  "created_at":"2026-10-18T21:45:05+08:00"},
+  "created_at":"` + ts(-2, "T21:45:05") + `"},
  {"bill_id":"b5","client_type":"web","event_name":"每日积分发放","biz_type":"daily_grant","points":300,
-  "created_at":"2026-10-18T00:01:11+08:00","grant_at":"2026-10-18T00:00:00+08:00","expire_at":"2026-10-24T23:59:59+08:00"},
+  "created_at":"` + ts(-2, "T00:01:11") + `","grant_at":"` + ts(-2, "T00:00:00") + `","expire_at":"` + ts(4, "T23:59:59") + `"},
  {"bill_id":"b6","client_type":"web","event_name":"服务异常补偿积分","biz_type":"reward_grant","points":1500,
-  "created_at":"2026-10-16T05:35:50+08:00"}
+  "created_at":"` + ts(-4, "T05:35:50") + `"}
 ]}}`
+}
 
 // TestFetchDailyGrants 只收未到期的 daily_grant，且按到期时刻升序。
 //
@@ -575,7 +583,7 @@ func TestFetchDailyGrants(t *testing.T) {
 		if got := r.URL.Query().Get("paging.limit"); got == "" {
 			t.Error("缺少 paging.limit 分页参数（上游缺省 limit 很小）")
 		}
-		_, _ = w.Write([]byte(billsFixture))
+		_, _ = w.Write([]byte(billsFixtureJSON()))
 	}))
 	defer srv.Close()
 
@@ -740,7 +748,7 @@ func TestUserResourceDetailAttachesDailyExpiry(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"available_points":8100,` +
 				`"daily_points":2100,"monthly_points":0,"reward_points":6000,"topup_points":0,"topup_frozen":false}}`))
 		case EpPointsBills:
-			_, _ = w.Write([]byte(billsFixture))
+			_, _ = w.Write([]byte(billsFixtureJSON()))
 		default:
 			t.Errorf("意外路径: %s", r.URL.Path)
 		}
