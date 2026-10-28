@@ -193,6 +193,9 @@ const patched =
   // 只能在源码作用域内赋值，故由改写注入 setter 而不是靠 globalThis）。
   // ⚠️ cache 必须按 uid 建键：真实代码是 detailCache[detailState.uid]，
   //    直接塞「响应对象」会让 detailCache[uid] 为 undefined（静默走空明细分支）。
+  // 降级链别名（R129）前端即时校验：fbRules / fbAliasValidate 是 `let` 与模块内函数，
+  // 由改写注入 setter + 校验入口，供「硬拒分支 + 软警告不阻止保存」的断言直接调用。
+  + ", fbAliasValidate, __setFbRules: (rs) => { fbRules = rs; }"
   + ", renderCreditDetail, showCreditDetail, __setCreditDetailState: (st, resp) => { detailState = st; detailCache = { [st.uid]: resp }; }"
   // 「不适用」默认收起（R103）：showNoCredit / acctFilter 都是 `let`，toggle 也要直接调
   + ", applyAcctFilter, toggleNoCredit, __setShowNoCredit: (v) => { showNoCredit = v; }, __setAcctFilter: (v) => { acctFilter = v; }"
@@ -917,6 +920,64 @@ for (const [label, re] of uniq) {
     ["降级链 hint 写明两种触发形态（模型全冷 / 整渠道全灭）",
       /无账号可承载[\s\S]{0,120}整渠道/.test(html)],
     ["降级记录区块标题不再写死「主模型全冷」", !html.includes("主模型全冷切备胎")],
+  ];
+  for (const [label, pass] of need) {
+    console.log(`  ${pass ? "✅" : "❌"} ${label}`);
+    if (!pass) failed++;
+  }
+}
+
+// ---- 降级链别名（R129）：head 行内输入框 + 只读 chip + 复制 + ? 说明 + 前端校验 ----
+// 与上面同族：别名是「后端有字段、面板没接线」就完全不生效的功能，故把接线一并锁死。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  const need = [
+    // 输入框必须在规则 head 行内（不额外占一行）——渲染模板里 .fb-rule-head 内出现 fb-name-edit
+    ["别名输入框渲染在规则 head 行内（不额外占行）",
+      /class="fb-rule-head">[\s\S]{0,600}fb-name-edit[\s\S]{0,400}fb-from-edit/.test(raw)],
+    ["别名输入框带 data-name-idx 与可选占位提示",
+      raw.includes("data-name-idx=") && raw.includes("别名（可选，如 fast）")],
+    ["卡片正文有只读别名 chip（「客户端可直接请求」）",
+      raw.includes("fb-alias-chip") && raw.includes("客户端可直接请求")],
+    ["chip 带复制按钮且接线到 copyText",
+      raw.includes("data-copy-alias") && /data-copy-alias\][\s\S]{0,200}copyText\(/.test(raw)],
+    ["无别名时 chip 不渲染（条件模板）",
+      /\$\{r\.name \?/.test(raw)],
+    ["? 说明写明别名语义（等同于主力模型 + 不参与备胎链 + 大小写敏感）",
+      html.includes("别名</b>是主力模型的另一个名字") && html.includes("别名不参与备胎链")
+      && html.includes("大小写敏感")],
+    ["别名输入框 change 提交接线（校验 + 回滚）",
+      raw.includes('classList.contains("fb-name-edit")') && raw.includes("不能含 / 、空白、逗号或 *")],
+    ["前端即时校验覆盖硬拒分支（斜杠 / 空白逗号星号 / 重名 / model_map / 渠道名）",
+      raw.includes("function fbAliasValidate()") && raw.includes("compat.model_map 的键重名")
+      && raw.includes("与渠道名重名") && raw.includes("别名不可重复")],
+    ["软警告（与真实裸名重合）只提示、不阻止保存",
+      html.includes('id="fbAliasWarn"') && /bareNames\.has\(nm\)[\s\S]{0,120}warns\.push/.test(raw)
+      && /const \[hardErr\] = fbAliasValidate\(\);[\s\S]{0,120}if \(hardErr\)/.test(raw)],
+    ["保存后端硬拒别名含 /（唯一真相在服务端）",
+      readFileSync(new URL("../internal/app/app.go", import.meta.url), "utf8").includes("不能含 /（别名是裸名")],
+    // 前端即时校验的**行为**断言（不只看代码里有几行）：逐条硬拒必须报错，
+    // 裸名重合必须只出软警告（否则用户被硬拦或根本不知情）。
+    ["前端即时校验：六条硬拒各一例都报错",
+      (() => {
+        const cases = [
+          [{ from: "a/b", to: ["c/d"], name: "x/y" }],
+          [{ from: "a/b", to: ["c/d"], name: "x y" }],
+          [{ from: "a/b", to: ["c/d"], name: "x,y" }],
+          [{ from: "a/b", to: ["c/d"], name: "x*" }],
+          [{ from: "a/b", to: ["c/d"], name: "dup" }, { from: "a/e", to: ["c/d"], name: "dup" }],
+          [{ from: "a/b", to: ["c/d"], name: "workbuddy" }],
+        ];
+        return cases.every((rs) => { T.__setFbRules(rs); return T.fbAliasValidate()[0] !== ""; });
+      })()],
+    ["前端即时校验：空别名合法（不报错不警告）",
+      (() => { T.__setFbRules([{ from: "a/b", to: ["c/d"], name: "" }]);
+        const [h, w] = T.fbAliasValidate(); return h === "" && w === ""; })()],
+    ["前端即时校验：与真实裸名重合只出软警告（不硬拦）",
+      (() => { T.__setFbRules([{ from: "a/b", to: ["c/d"], name: "glm-5.3" }]);
+        const [h, w] = T.fbAliasValidate(); return h === "" && w.includes("裸名重合"); })()],
+    ["软警告不阻止保存（saveModelFallback 只硬拦 hardErr）",
+      raw.includes(`if (hardErr) { $("fbErr").textContent = hardErr; return; }`)],
   ];
   for (const [label, pass] of need) {
     console.log(`  ${pass ? "✅" : "❌"} ${label}`);
