@@ -32,6 +32,7 @@ import (
 	"wild-work/internal/app"
 	"wild-work/internal/auth"
 	"wild-work/internal/cline"
+	"wild-work/internal/comate"
 	"wild-work/internal/codearts"
 	"wild-work/internal/config"
 	"wild-work/internal/custom"
@@ -191,6 +192,12 @@ func main() {
 	if err != nil {
 		fatal("读取 Cline 账号目录失败：%v", err)
 	}
+	// Comate：粘贴型渠道，凭据是 WPS 账号的 wps_sid Cookie，由面板「粘贴 wps_sid」写入 auths/。
+	// Cookie 不轮换 ⇒ 无 refresh、无保活、无签到。
+	cmAuths, err := auth.LoadComateDir(cfg.AuthDir)
+	if err != nil {
+		fatal("读取 Comate 账号目录失败：%v", err)
+	}
 	// OfficeAce：导入型渠道，凭据由面板从本机 OfficeAce 客户端文件发现或自助 OAuth 登录写入 auths/。
 	oaAuths, err := auth.LoadOfficeAceDir(cfg.AuthDir)
 	if err != nil {
@@ -227,8 +234,8 @@ func main() {
 	if err != nil {
 		fatal("读取 CodeArts 账号目录失败：%v", err)
 	}
-	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d, codearts=%d from %s",
-		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), len(caAuths), cfg.AuthDir)
+	log.Printf("loaded accounts: workbuddy=%d %s, traework=%d, qoder=%d, qodercn=%d, qodercom=%d, workbuddyai=%d, qwenwork=%d, glm=%d, monkeycode=%d, raccoon=%d, loomy=%d, cline=%d, comate=%d, officeace=%d, oczen=%d(匿名), kilo=%d(匿名), minimax=%d, lobsterai=%d, zcode=%d, gemini=%d, codearts=%d from %s",
+		len(wbAuths), cfg.Region, len(trAuths), len(qdAuths), len(qcnAuths), len(qcmAuths), len(wbaAuths), len(qwAuths), len(glmAuths), len(mcAuths), len(rcAuths), len(lmAuths), len(clAuths), len(cmAuths), len(oaAuths), len(ocAuths), len(kiAuths), len(mimAuths), len(lobAuths), len(zcdAuths), len(gemAuths), len(caAuths), cfg.AuthDir)
 
 	wbPool := pool.New(filepath.Join(stateDir, "state-workbuddy.json"))
 	for _, a := range wbAuths {
@@ -285,6 +292,11 @@ func main() {
 	clPool := pool.New(filepath.Join(stateDir, "state-cline.json"))
 	for _, a := range clAuths {
 		clPool.Add(a)
+	}
+	// Comate：真多账号池（一份 wps_sid = 一个 WPS 账号），不置 SingleAccount。
+	cmPool := pool.New(filepath.Join(stateDir, "state-comate.json"))
+	for _, a := range cmAuths {
+		cmPool.Add(a)
 	}
 	// OfficeAce：真多账号池（每个华为账号一份凭据），不置 SingleAccount。
 	oaPool := pool.New(filepath.Join(stateDir, "state-officeace.json"))
@@ -363,6 +375,10 @@ func main() {
 	// 长回答必被从中间掐断。共用 Transport 以复用连接池。
 	clUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	clUp.StreamHTTP.Transport = clUp.HTTP.Transport
+	cmUp := comate.New()
+	// Comate：与 cline 同款——非流式 client 保留总超时；StreamHTTP 不设 Timeout（R35）。
+	cmUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	cmUp.StreamHTTP.Transport = cmUp.HTTP.Transport
 	oaUp := officeace.New()
 	// OfficeAce 上游为华为 AgentArts 网关：恒 stream=true，长回答（含思维链）常见，
 	// 非流式 client 保留总超时兜底；StreamHTTP 不设 Timeout（R35）。
@@ -437,6 +453,7 @@ func main() {
 		provider.Raccoon.String():     {rcUp.HTTP, rcUp.StreamHTTP},
 		provider.Loomy.String():       {lmUp.HTTP, lmUp.StreamHTTP},
 		provider.Cline.String():       {clUp.HTTP, clUp.StreamHTTP},
+		provider.Comate.String():      {cmUp.HTTP, cmUp.StreamHTTP},
 		provider.OfficeAce.String():   {oaUp.HTTP, oaUp.StreamHTTP},
 		provider.Oczen.String():       {ocUp.HTTP, ocUp.StreamHTTP},
 		provider.Kilo.String():        {kiUp.HTTP, kiUp.StreamHTTP},
@@ -521,6 +538,11 @@ func main() {
 	// 于是每天空跑一次必然失败的签到，并在面板渲染红色「签到失败」。
 	clSch := scheduler.New(scheduler.Config{Pool: clPool, Upstream: clUp, Name: "cline",
 		CheckinMinutes: []int{}, KeepaliveHours: []int{}, Ledger: lg})
+	// Comate：wps_sid Cookie **不过期**、无签到活动、无 refresh token ⇒ 定时任务全部关闭。
+	// 必须传显式空切片 []int{}（R39）：传 nil 会被 scheduler.New 的零值兜底补上默认时间，
+	// 于是每天空跑一次必然失败的签到，并在面板渲染红色「签到失败」。
+	cmSch := scheduler.New(scheduler.Config{Pool: cmPool, Upstream: cmUp, Name: "comate",
+		CheckinMinutes: []int{}, KeepaliveHours: []int{}, Ledger: lg})
 	// OfficeAce：有每日签到（bonus/claim）但要先有临时凭据（V11 签名），保活用于续期。
 	// CheckinMinutes 用全局签到时间；KeepaliveHours 用配置保活时段（临时凭据约 2h 到期）。
 	oaSch := scheduler.New(scheduler.Config{Pool: oaPool, Upstream: oaUp, Name: "officeace",
@@ -582,6 +604,7 @@ func main() {
 		provider.Loomy:      {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, StaticModels: loomy.StaticModels()},
 		provider.GLM:        {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, StaticModels: glm.StaticModels()},
 		provider.Cline:      {Kind: provider.Cline, Pool: clPool, Upstream: clUp, StaticModels: cline.StaticModels()},
+		provider.Comate:     {Kind: provider.Comate, Pool: cmPool, Upstream: cmUp, StaticModels: comate.StaticModels()},
 		provider.OfficeAce:  {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, StaticModels: officeace.StaticModels()},
 		// 注意：GLM **不**置 SingleAccount。
 		//
@@ -626,6 +649,7 @@ func main() {
 		provider.Loomy:       {Kind: provider.Loomy, Pool: lmPool, Upstream: lmUp, Scheduler: lmSch},
 		provider.GLM:         {Kind: provider.GLM, Pool: glmPool, Upstream: glmUp, Scheduler: glmSch},
 		provider.Cline:       {Kind: provider.Cline, Pool: clPool, Upstream: clUp, Scheduler: clSch},
+		provider.Comate:      {Kind: provider.Comate, Pool: cmPool, Upstream: cmUp, Scheduler: cmSch},
 		provider.OfficeAce:   {Kind: provider.OfficeAce, Pool: oaPool, Upstream: oaUp, Scheduler: oaSch},
 		provider.Oczen:       {Kind: provider.Oczen, Pool: ocPool, Upstream: ocUp, Scheduler: ocSch},
 		provider.Kilo:        {Kind: provider.Kilo, Pool: kiPool, Upstream: kiUp, Scheduler: kiSch},
@@ -797,6 +821,9 @@ func main() {
 	// Cline 的 Run 同样不可漏（R34：漏了不报错，只表现为该渠道定时逻辑从不运行）。
 	// 本渠道任务全关，Run 只会阻塞等 ctx/配置变更，但缺了它将来加任务即静默失效。
 	go clSch.Run(sctx)
+	// Comate 的 Run 同样不可漏（R34）：本渠道当前无任何定时任务，Run 只会阻塞等
+	// ctx/配置变更；但漏了它，将来给它加任务就会静默不跑。
+	go cmSch.Run(sctx)
 	// OfficeAce 的 Run 不可漏（R34）：本渠道有签到与保活。
 	go oaSch.Run(sctx)
 	// kilo 的 Run 同样不可漏（R34）：本渠道当前无任何定时任务，Run 只会阻塞等

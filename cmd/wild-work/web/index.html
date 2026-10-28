@@ -75,6 +75,7 @@
           <button class="btn primary alt monkeycode" id="btnAddMonkeyCode">＋ MonkeyCode</button>
           <button class="btn primary alt loomy" id="btnAddLoomy">＋ Loomy</button>
           <button class="btn primary alt cline" id="btnAddCline" title="免费池渠道：粘贴官方 API Key，须为多个独立账号各自的 Key">＋ Cline</button>
+          <button class="btn primary alt comate" id="btnAddComate" title="WPS Comate 渠道：粘贴浏览器 Cookie 里的 wps_sid，须为多个独立 WPS 账号各自的 sid">＋ WPS Comate</button>
           <button class="btn primary alt wbai" id="btnAddWBAI">＋ WorkBuddyAI</button>
           <button class="btn primary alt qodercom" id="btnAddQoderCOM">＋ QoderCOM</button>
           <button class="btn primary alt qwenwork" id="btnAddQwen">＋ 千问办公</button>
@@ -347,6 +348,50 @@
     <div class="modal-actions">
       <button class="btn" id="btnClineCancel">取消</button>
       <button class="btn primary" id="btnClineSubmit">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- WPS Comate：粘贴 wps_sid Cookie（无浏览器登录编排；见 internal/comate） -->
+<div class="overlay hidden" id="comateOverlay">
+  <div class="modal modal-wide">
+    <div class="modal-title">添加 WPS Comate 账号</div>
+    <div class="modal-body settings-body">
+
+      <div class="cfg-section">
+        <div class="cfg-heading">获取 wps_sid</div>
+        <ol class="glm-steps">
+          <li>用浏览器登录 <a href="https://www.wps.cn/" target="_blank" rel="noopener noreferrer">www.wps.cn</a>（WPS 账号即可，无需会员）。</li>
+          <li>按 F12 打开开发者工具 → <code>Application</code>（应用）→ <code>Cookies</code> → <code>https://www.wps.cn</code>。</li>
+          <li>找到名为 <code>wps_sid</code> 的 Cookie，复制它的<b>值</b>（约 50 位字符）粘贴到下面。</li>
+        </ol>
+        <input id="comateSidInput" class="input grow" spellcheck="false" autocomplete="off"
+               placeholder="粘贴 wps_sid Cookie 值" style="width:100%;font-family:ui-monospace,monospace">
+      </div>
+
+      <!-- 关键约束：积分按 WPS 账号计，同账号多 sid 不扩额度。 -->
+      <div class="glm-warn">
+        <div class="glm-warn-title">⚠️ 必须使用多个独立 WPS 账号各自的 wps_sid</div>
+        <ol>
+          <li>Comate 积分<b>按 WPS 账号计</b>。</li>
+          <li>同一个账号重复粘贴同一份 wps_sid <b>共享同一份额度</b>，不会增加可用积分。
+              本工具在检测到重复 sid 时会给出提示。</li>
+          <li>想扩额度请<b>注册多个独立 WPS 账号</b>，各自登录后逐个粘贴添加。</li>
+        </ol>
+      </div>
+
+      <div class="hint">
+        模型列表由上游 <code>/models</code> 动态下发（含 GLM / DeepSeek / MiniMax / MiMo 等，
+        上下文窗口等参数为上游官方声明）。上游无余额查询接口，故积分显示「不适用」；
+        实际消耗见每次回答的 <code>usage.credits</code> 与「用量与流水」。
+        wps_sid 过期较慢，但若验证失败提示「无效或已过期」，请重新从浏览器复制。
+      </div>
+
+      <div class="hint" id="comateErr" style="color:var(--danger)"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="btnComateCancel">取消</button>
+      <button class="btn primary" id="btnComateSubmit">添加</button>
     </div>
   </div>
 </div>

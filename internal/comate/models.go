@@ -1,0 +1,168 @@
+package comate
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+
+	"wild-work/internal/auth"
+	"wild-work/internal/provider"
+)
+
+// ---------------------------------------------------------------------------
+// 动态目录（唯一来源）
+// ---------------------------------------------------------------------------
+
+// remoteModel 是 /models 响应 data.items 数组元素的形状（字段按需取用）。
+type remoteModel struct {
+	DisplayName     string   `json:"display_name"`
+	Name            string   `json:"name"` // 上游完整 ID，如 673940725/zhipu/glm-5.3-flash//public
+	Description     string   `json:"description"`
+	LLMTypes        []string `json:"llm_types"` // llm-chat / llm-multimodal
+	ContextWindow   int64    `json:"context_window"`
+	SupportThinking bool     `json:"support_thinking"`
+	ThinkingLevels  []string `json:"thinking_levels"`
+	ModelTier       string   `json:"model_tier"`
+	ConsumeRatio    float64  `json:"consume_ratio"`
+}
+
+// modelsResp /models 信封：{"code":0,"msg":"","data":{"auto":{…},"items":[…]}}。
+type modelsResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		Auto  json.RawMessage `json:"auto"`
+		Items []remoteModel   `json:"items"`
+	} `json:"data"`
+}
+
+// StaticModels 恒 nil：本渠道**不做任何本地假设**（无静态表、无映射、无过滤）。
+// 模型面完全由上游 /models 的 items 数组决定，原样透传。
+// 兜底语义见 handler.CachedChannelModels —— 缓存优先于静态表，空表不会让渠道分组消失
+//（与 cline/qodercn/qodercom 同款先例）。
+func StaticModels() []provider.ModelInfo { return nil }
+
+// FetchModels 返回暴露集 = /models 的 items 数组**原样透传**：
+//  1. ID 不改名不改前缀（items[].name 就是上游完整模型 ID，含 //public 尾巴）；
+//  2. 不按 tier/llm_types 过滤 —— 上游给的什么就暴露什么；
+//  3. 仅做两条机械兜底：精确 ID 去重、name 缺失时用 prettifyID 兜底；
+//  4. context_window / support_thinking / llm_types 上游**有**权威声明
+//     （与 cline 不同，无需本地实测表），直接填入 ModelInfo，ContextFromAPI=true。
+//
+// 上游目录瞬时抖动时返回缓存（knownIDs），不掏空面板。
+func (c *Client) FetchModels(a *auth.Auth) ([]provider.ModelInfo, error) {
+	raw, err := c.getJSON(a, EpModels)
+	var rec modelsResp
+	if err == nil {
+		err = json.Unmarshal(raw, &rec)
+	}
+	if err == nil && rec.Code != 0 {
+		err = fmt.Errorf("comate: /models 返回 code=%d msg=%s", rec.Code, rec.Msg)
+	}
+	if err != nil {
+		// 兜底：items 为空但缓存尚有内容 ⇒ 返回缓存（上游目录瞬时抖动不掏空面板）
+		c.knownMu.RLock()
+		cached := make([]provider.ModelInfo, 0, len(c.knownIDs))
+		for id, name := range c.knownIDs {
+			cached = append(cached, modelInfoOf(id, name))
+		}
+		c.knownMu.RUnlock()
+		sort.Slice(cached, func(i, j int) bool { return cached[i].ID < cached[j].ID })
+		if len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("comate: 模型目录拉取失败: %w", err)
+	}
+
+	seen := map[string]bool{}
+	out := make([]provider.ModelInfo, 0, len(rec.Data.Items))
+	for _, m := range rec.Data.Items {
+		id := strings.TrimSpace(m.Name)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		name := strings.TrimSpace(m.DisplayName)
+		if name == "" || name == id {
+			name = prettifyID(id)
+		}
+		out = append(out, enrichModelInfo(modelInfoOf(id, name), m))
+		c.rememberLiveModel(id, name)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// modelInfoOf 组装单条模型信息：基础字段来自上游 items[]。
+// 上下文/多模态/思考能力上游**有**权威声明（ContextFromAPI=true），
+// 但本函数只拿 id/name —— 能力字段在 FetchModels 里按 remoteModel 填充。
+//
+// 注：knownIDs 缓存路径（目录拉取失败时的兜底）只有 id/name 可用，
+// 能力字段缺失是可接受的降级（面板显示「未知」而非虚报）。
+func modelInfoOf(id, name string) provider.ModelInfo {
+	return provider.ModelInfo{ID: id, Name: name}
+}
+
+// enrichModelInfo 把 remoteModel 的能力声明填进 ModelInfo（ContextFromAPI=true）。
+func enrichModelInfo(mi provider.ModelInfo, m remoteModel) provider.ModelInfo {
+	if m.ContextWindow > 0 {
+		mi.ContextWindow = m.ContextWindow
+		mi.ContextFromAPI = true
+	}
+	for _, t := range m.LLMTypes {
+		if t == "llm-multimodal" {
+			mi.SupportsImages = true
+		}
+	}
+	if m.SupportThinking {
+		mi.SupportsReasoning = true
+		mi.ContextFromAPI = true
+	}
+	if len(m.ThinkingLevels) > 0 {
+		mi.ReasoningEfforts = append([]string(nil), m.ThinkingLevels...)
+	}
+	return mi
+}
+
+// prettifyID 把上游完整 ID 变成可读展示名（仅在上游未给 display_name 时兜底）。
+// 形态：673940725/zhipu/glm-5.3-flash//public → GLM-5.3 Flash。
+func prettifyID(id string) string {
+	parts := strings.Split(id, "/")
+	s := parts[len(parts)-2] // 倒数第二段是短名（最后一段是空的 //public 尾巴）
+	if s == "" && len(parts) >= 2 {
+		s = parts[len(parts)-3]
+	}
+	s = strings.ReplaceAll(s, "-", " ")
+	if r := []rune(s); len(r) > 0 {
+		return strings.ToUpper(string(r[0])) + string(r[1:])
+	}
+	return s
+}
+
+// ---------------------------------------------------------------------------
+// 校验集
+// ---------------------------------------------------------------------------
+
+// knownModel 本地校验。**冷启动放行**：目录尚未成功拉取过（knownIDs 为空）时不拦截 ——
+// 若拦，daemon 重启后第一批请求会全部被本地 404（等于「渠道周期性瘫痪」），
+// 而放行的最坏结果只是让上游给出权威错误（R42 的教训）。
+func (c *Client) knownModel(id string) bool {
+	c.knownMu.RLock()
+	defer c.knownMu.RUnlock()
+	if len(c.knownIDs) == 0 {
+		return true
+	}
+	_, ok := c.knownIDs[id]
+	return ok
+}
+
+// rememberLiveModel 把 items[] 条目记入已知集（ID → name，**替换式**更新）。
+func (c *Client) rememberLiveModel(id, name string) {
+	c.knownMu.Lock()
+	defer c.knownMu.Unlock()
+	if c.knownIDs == nil {
+		c.knownIDs = map[string]string{}
+	}
+	c.knownIDs[id] = name
+}

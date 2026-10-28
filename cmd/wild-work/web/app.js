@@ -733,8 +733,8 @@ function renderTopbar() {
 }
 
 // 渠道显示名与 CSS 短类名（后端 group / 费率 channel 均为 provider.Kind）。
-const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts", cline: "Cline", officeace: "OfficeAce" };
-const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", cline: "cline", officeace: "officeace" };
+const CH_LABEL = { workbuddy: "WorkBuddyCN", workbuddyai: "WorkBuddyAI", traework: "TraeWork", traecode: "TraeCode", qoder: "Qoder", qodercn: "QoderCN", qodercom: "QoderCOM", qwenwork: "千问办公", glm: "智谱清言", monkeycode: "MonkeyCode", raccoon: "小浣熊", loomy: "Loomy", oczen: "OpenCodeZen", kilo: "Kilo", minimax: "MiniMax", lobsterai: "LobsterAI", zcode: "ZCode", gemini: "Gemini", codearts: "CodeArts", cline: "Cline", officeace: "OfficeAce", comate: "WPS Comate" };
+const CH_CLASS = { workbuddy: "wb", workbuddyai: "wbai", traework: "trae", traecode: "traecode", qoder: "qoder", qodercn: "qodercn", qodercom: "qodercom", qwenwork: "qwenwork", glm: "glm", monkeycode: "monkeycode", raccoon: "raccoon", loomy: "loomy", oczen: "oczen", kilo: "kilo", minimax: "minimax", lobsterai: "lobsterai", zcode: "zcode", gemini: "gemini", codearts: "codearts", cline: "cline", officeace: "officeace", comate: "comate" };
 const chLabel = (k) => CH_LABEL[k] || k;
 const chClass = (k) => CH_CLASS[k] || "custom";
 // ---------- 图表配色：与徽章同源，但保证同图任意两条线颜色可辨 ----------
@@ -833,7 +833,7 @@ function varyColor(hex, i) {
 // Loomy 同样已实现签到（宠物每日打工奖励，见 internal/loomy/checkin.go），故也在名单外。
 // 注意：Loomy 的奖励判据是「当日有效对话轮次」（上游算），未在官方客户端用过该账号时
 // 领取结果会是「未达档位」——那是如实状态，不是按钮坏了。
-const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "oczen", "kilo", "zcode", "gemini", "cline"]);
+const NO_EXPLICIT_CHECKIN = new Set(["workbuddyai", "qwenwork", "oczen", "kilo", "zcode", "gemini", "cline", "comate"]);
 const noExplicitCheckin = (g) => NO_EXPLICIT_CHECKIN.has(g) || isCustomGroup(g); // 自定义渠道无签到活动（R66）
 // isCustomGroup 该分组是否为用户自定义 OpenAI 兼容渠道（R66）。
 // 以 state.custom_channels（后端 /api/state 下发，保存即热更新）为准，勿在前端另维护一份。
@@ -853,7 +853,8 @@ const WEB_LOGIN_CHANNELS = new Set(["raccoon", "loomy"]);
 const hasWebLogin = (ch) => WEB_LOGIN_CHANNELS.has(ch);
 // 粘贴凭据型渠道：没有浏览器登录编排，凭据由用户从官方站点自行创建后粘贴进来。
 // Cline：app.cline.bot → 注册账号 → Account / API Keys 建 sk_ Key（见 internal/cline）。
-const PASTE_KEY_CHANNELS = new Set(["cline"]);
+// Comate：WPS 账号 → 浏览器登录 www.wps.cn → 复制 Cookie 里的 wps_sid（见 internal/comate）。
+const PASTE_KEY_CHANNELS = new Set(["cline", "comate"]);
 const isPasteKey = (ch) => PASTE_KEY_CHANNELS.has(ch);
 // 无手动签到渠道的状态文案：每个在 NO_EXPLICIT_CHECKIN 里的渠道都要有一条
 // （漏写就落兜底的「无签到」，把「每日积分自动发放」说成「不支持」）。
@@ -865,12 +866,13 @@ const NO_CHECKIN_TAG = {
   zcode: "不支持",
   gemini: "不支持",
   cline: "无签到",
+  comate: "无签到",
 };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
 // 内建名单只有 oczen/kilo/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
 // 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
-const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline"]);
+const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline", "comate"]);
 // 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
 // officeace 一并纳入（2026-10-17）：它除了「登录态失效」，还有「缺 refresh_token」
 // 这种**不能自愈**的形态（客户端导入只拿得到不过期的网关 Basic），此时同样只能重新登录
@@ -926,7 +928,7 @@ function creditsText(a) {
 // 保持「账号卡片 → 汇总条 → 费率 tab」三处看到同一个渠道顺序。
 // ⚠️ 新增渠道必须同步此表：漏项会被 renderSummary 按字母序垫到最末
 //   （ui-static-check 有覆盖度断言）。qoder 已下线，仅为存量账号兜底留位。
-const CH_SUMMARY_ORDER = ["oczen", "kilo", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "traecode", "qwenwork", "glm", "cline", "monkeycode", "raccoon", "loomy", "minimax", "lobsterai", "zcode", "gemini", "codearts", "officeace", "qoder"];
+const CH_SUMMARY_ORDER = ["oczen", "kilo", "workbuddy", "workbuddyai", "qodercn", "qodercom", "traework", "traecode", "qwenwork", "glm", "cline", "comate", "monkeycode", "raccoon", "loomy", "minimax", "lobsterai", "zcode", "gemini", "codearts", "officeace", "qoder"];
 
 // renderSummary 渠道积分汇总条：每渠道一行「可用总积分 / 临期」，末尾合计。
 // 数据全部来自 state.accounts（pool 实时值），与账号卡片同源；
@@ -1863,6 +1865,13 @@ function promptLogin(channel) {
   // Cline 的凭据是官方 API Key，创建动作发生在 app.cline.bot 网页里，本工具无法代劳，
   // 所以这里没有轮询/回调，只有一次「验证 + 落盘」（后端只调 /api-keys，零 token 消耗）。
   if (isPasteKey(channel)) {
+    if (channel === "comate") {
+      $("comateSidInput").value = "";
+      $("comateErr").textContent = "";
+      $("comateOverlay").classList.remove("hidden");
+      setTimeout(() => $("comateSidInput").focus(), 30);
+      return;
+    }
     $("clineKeyInput").value = "";
     $("clineErr").textContent = "";
     $("clineWarn").classList.add("hidden");
@@ -2218,6 +2227,31 @@ async function submitClineKey() {
   }
 }
 
+// submitComateSID 提交用户粘贴的 wps_sid Cookie。
+// 后端只做「GET /models 验证 + 落盘」，零积分消耗；
+// 返回的 warning 非空表示「这份 wps_sid 与已有账号相同」——
+// 积分按 WPS 账号计，同账号重复粘贴不扩额度，必须显式告知。
+async function submitComateSID() {
+  const sid = ($("comateSidInput").value || "").trim();
+  if (!sid) { $("comateErr").textContent = "请粘贴 wps_sid Cookie"; return; }
+  const btn = $("btnComateSubmit");
+  btn.disabled = true;
+  $("comateErr").textContent = "验证中…";
+  try {
+    const r = await api("/api/login/comate_sid", { sid });
+    $("comateOverlay").classList.add("hidden");
+    $("comateSidInput").value = "";
+    if (r && r.warning) toast(r.warning);
+    toast("WPS Comate 账号已添加");
+    await loadState();
+    refreshFees();
+  } catch (e) {
+    $("comateErr").textContent = e.message || "验证失败";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // 手工兜底：粘贴 refresh_token
 async function submitGLMToken() {
   const token = ($("glmTokenInput").value || "").trim();
@@ -2434,7 +2468,7 @@ async function saveModelFallback() {
 const RESERVED_CHANNEL_NAMES = new Set([
   "workbuddy", "workbuddyai", "traework", "traecode", "qoder", "qodercn", "qodercom",
   "qwenwork", "monkeycode", "raccoon", "loomy", "oczen", "kilo", "minimax", "lobsterai",
-  "zcode", "gemini", "codearts", "glm", "cline", "officeace",
+  "zcode", "gemini", "codearts", "glm", "cline", "officeace", "comate",
   "cline-free", // ModelNamespaces：上游 ID 自带命名空间，自定义渠道不得占用
 ]);
 let editCustomChannels = [];
@@ -3426,6 +3460,9 @@ function bind() {
   $("btnAddCline").onclick = () => promptLogin("cline");
   $("btnClineSubmit").onclick = submitClineKey;
   $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
+  $("btnAddComate").onclick = () => promptLogin("comate");
+  $("btnComateSubmit").onclick = submitComateSID;
+  $("btnComateCancel").onclick = () => $("comateOverlay").classList.add("hidden");
   $("btnAddOfficeAce").onclick = () => promptLogin("officeace");
   $("btnAddMiniMax").onclick = () => promptLogin("minimax");
   $("btnAddLobsterAI").onclick = () => promptLogin("lobsterai");

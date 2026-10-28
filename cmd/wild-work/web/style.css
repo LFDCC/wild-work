@@ -31,6 +31,7 @@
   --ch-officeace: #dc2626;   /* OfficeAce 华为中国红 */
   --ch-oczen: #475569;       /* OpenCodeZen 禅意石板灰 */
   --ch-cline: #15803d;       /* Cline 机器人深绿 */
+  --ch-comate: #d97706;      /* WPS Comate 琥珀橙（WPS 品牌色系） */
   --ch-custom: #6366f1;      /* 自定义渠道兜底色（走黄金角自适应色，见 chColor） */
   --ch-kilo: #164e63;        /* Kilo 深冷松蓝 */
   --ch-minimax: #c2410c;     /* MiniMax 活力暖橙（海螺 AI 官方品牌橙，告别橄榄屎黄） */
@@ -143,6 +144,7 @@ body {
 .btn.primary.alt.gemini { background: var(--ch-gemini); border-color: var(--ch-gemini); }
 .btn.primary.alt.codearts { background: var(--ch-codearts); border-color: var(--ch-codearts); }
 .btn.primary.alt.cline { background: var(--ch-cline); border-color: var(--ch-cline); }
+.btn.primary.alt.comate { background: var(--ch-comate); border-color: var(--ch-comate); }
 .btn.primary.alt.custom { background: var(--ch-custom); border-color: var(--ch-custom); }
 
 /* 智谱清言登录弹层步骤列表 */
@@ -260,6 +262,7 @@ body {
 .badge.gemini { background: var(--ch-gemini); }
 .badge.codearts { background: var(--ch-codearts); }
 .badge.cline { background: var(--ch-cline); }
+.badge.comate { background: var(--ch-comate); }
 .badge.custom { background: var(--ch-custom); }
 
 .tag { font-size: 10px; padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
