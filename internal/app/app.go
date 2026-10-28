@@ -21,6 +21,7 @@ import (
 	"wild-work/internal/auth"
 	"wild-work/internal/backuplink"
 	"wild-work/internal/cline"
+	"wild-work/internal/comate"
 	"wild-work/internal/config"
 	"wild-work/internal/custom"
 	"wild-work/internal/ledger"
@@ -351,6 +352,7 @@ var channelOrder = map[provider.Kind]int{
 	provider.ZCode:     12,
 	provider.Gemini:    13,
 	provider.CodeArts:  14,
+	provider.Comate:    15,
 }
 
 // feeChannelOrder 「模型列表和费率」面板的渠道分组顺序。
@@ -360,6 +362,7 @@ var feeChannelOrder = []provider.Kind{
 	provider.Oczen, provider.Kilo, provider.WorkBuddy, provider.WorkBuddyAI, provider.QoderCN,
 	provider.QoderCOM, provider.TraeWork, provider.TraeCode, provider.QwenWork, provider.GLM,
 	provider.Cline, // 漏在此表 = 面板永远不出该渠道 tab（buildFeesChannels 只遍历本表）
+	provider.Comate,
 	provider.MonkeyCode,
 	provider.Raccoon,
 	provider.Loomy,
@@ -478,7 +481,7 @@ func (a *App) SetCustomChannelsSyncer(fn func(channels []custom.ChannelConfig)) 
 // 自定义渠道无签到活动（R66）；内建名单固定，故抽成无状态的包级函数（可脱离 App 断言），
 // 方法体仅补上「是否自定义渠道」这一动态判定。
 func noExplicitCheckin(k provider.Kind) bool {
-	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.Oczen || k == provider.Kilo || k == provider.ZCode || k == provider.Gemini || k == provider.Cline
+	return k == provider.WorkBuddyAI || k == provider.QwenWork || k == provider.Oczen || k == provider.Kilo || k == provider.ZCode || k == provider.Gemini || k == provider.Cline || k == provider.Comate
 }
 
 func (a *App) noExplicitCheckinKind(k provider.Kind) bool {
@@ -1641,6 +1644,56 @@ func (a *App) SubmitClineKey(apiKey string) (string, string, error) {
 	return res.UID, warn, nil
 }
 
+// SubmitComateSID 提交用户粘贴的 wps_sid Cookie：验证 → 落盘 → 重载账号池。
+//
+// 验证只调 GET /models —— **零积分消耗**，避免「添加账号即烧积分」。
+// 上游 /models 不回传任何身份字段（实测），uid 用 sid 的 sha256 前 16 位兜底
+//（与 cline probeKey 的 hash 兜底同款：只需稳定且不含明文）。
+//
+// 同账号检测：wps_sid 与已入库账号逐字比对 —— 同一份 sid 重复添加不扩额度
+//（积分按 WPS 账号计），提示用户换账号而不是重复粘贴。
+func (a *App) SubmitComateSID(sid string) (string, string, error) {
+	s := strings.TrimSpace(sid)
+	if s == "" {
+		return "", "", errors.New("wps_sid 不能为空")
+	}
+	uid, err := comate.ValidateSID(s)
+	if err != nil {
+		return "", "", err
+	}
+
+	// 同账号检测：与已入库 comate 账号的 sid 逐字比对。
+	warn := ""
+	if existing, lerr := auth.LoadComateDir(a.cfg.AuthDir); lerr == nil {
+		for _, e := range existing {
+			if e.AccessTokenValue() == s {
+				warn = fmt.Sprintf("这个 wps_sid 与已添加的账号 %s 相同（积分按 WPS 账号计），"+
+					"重复添加不会增加可用积分。请换一个 WPS 账号的 wps_sid。", e.UID)
+				break
+			}
+		}
+	}
+
+	_ = os.MkdirAll(a.cfg.AuthDir, 0o755)
+	ca := &auth.Auth{
+		Kind:        "comate",
+		UID:         uid,
+		Nickname:    "WPS 账号 " + uid[len(uid)-6:],
+		AccessToken: s,
+		// Cookie 无过期概念：ExpiresAt 必须远期，0 会让 NeedsRefresh 恒真（不变量 21 同款陷阱）
+		ExpiresAt: comate.FarFutureExpiry(),
+		FilePath:  filepath.Join(a.cfg.AuthDir, "comate-"+uid+".json"),
+	}
+	if err := ca.SaveAtomic(); err != nil {
+		return "", "", fmt.Errorf("保存 Comate 凭据失败：%w", err)
+	}
+	// 日志零 token（不变量 2）：只打 uid，绝不打完整 sid
+	log.Printf("comate 账号已添加（粘贴 wps_sid）uid=%s 同账号告警=%v", uid, warn != "")
+	a.reloadAccounts()
+	a.afterAccountAdded(provider.Comate)
+	return uid, warn, nil
+}
+
 // StartGLMAutoLogin 发起智谱清言自动登录：拉起独立 profile 的浏览器，
 // 用户在真实浏览器里登录，后台经 CDP 自动捕获 Cookie。
 //
@@ -2009,6 +2062,15 @@ func (a *App) reloadAccounts() {
 		auths, err := auth.LoadClineDir(a.cfg.AuthDir)
 		if err != nil {
 			log.Printf("reload cline accounts: %v", err)
+		} else {
+			rt.Pool.SyncToDir(auths)
+		}
+	}
+	// Comate：一个 WPS 账号一份 wps_sid，凭据由面板「粘贴 wps_sid」写入。
+	if rt := a.runtime(provider.Comate); rt != nil && rt.Pool != nil {
+		auths, err := auth.LoadComateDir(a.cfg.AuthDir)
+		if err != nil {
+			log.Printf("reload comate accounts: %v", err)
 		} else {
 			rt.Pool.SyncToDir(auths)
 		}
@@ -3805,6 +3867,22 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			return
 		}
 		uid, warn, err := a.SubmitClineKey(req.APIKey)
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": uid, "warning": warn})
+	})
+
+	mux.HandleFunc("POST /api/login/comate_sid", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			SID string `json:"sid"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "请求体解析失败")
+			return
+		}
+		uid, warn, err := a.SubmitComateSID(req.SID)
 		if err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return

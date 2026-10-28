@@ -1,6 +1,6 @@
 # wild-work
 
-> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、QoderCN、QoderCOM（国际版）、千问办公、MonkeyCode 平台托管模型、小浣熊、Loomy（讯飞）、智谱清言、Cline（官方 API Key 免费池）、华为云果办 OfficeAce 的多个账号聚合成一个 OpenAI 兼容 API，并额外提供**无需账号**的 OpenCodeZen 匿名免费通道，双击启动，浏览器管理。
+> 多渠道账号聚合桌面工具——把 WorkBuddy(CodeBuddy) 国内版/国际版、TraeWork、QoderCN、QoderCOM（国际版）、千问办公、MonkeyCode 平台托管模型、小浣熊、Loomy（讯飞）、智谱清言、Cline（官方 API Key 免费池）、WPS Comate、华为云果办 OfficeAce 的多个账号聚合成一个 OpenAI 兼容 API，并额外提供**无需账号**的 OpenCodeZen 匿名免费通道，双击启动，浏览器管理。
 
 [![GitHub](https://img.shields.io/badge/GitHub-rockswang%2Fworkbuddy--wild-blue)](https://github.com/rockswang/workbuddy-wild)
 
@@ -44,6 +44,7 @@
 | Loomy（讯飞） | `loomy/*` | 从客户端导入 | 导入型渠道：凭据从**本机已登录的官方客户端**读取；上游无 refresh 端点，session 约 14 天，到期需重新导入 |
 | 智谱清言 | `glm/*` | CDP 自动捕获 | **网页版私有接口**（非开放平台），凭据是浏览器 Cookie 里的 `chatglm_refresh_token`；新账号须在智谱清言 App 登录一次才发放初始额度 |
 | Cline | `cline-free/*`（兼容旧写法 `cline/*`） | 粘贴官方 API Key | 只调度免费模型；Key 不过期、不轮换；官方额度按账号计，多把 Key 须来自**多个独立账号**（同账号多 Key 共享一份额度，面板会自动识别并提示） |
+| WPS Comate | `comate/*` | 粘贴 wps_sid Cookie | WPS 网页版模型代理（`comate.wps.cn`）：浏览器登录 www.wps.cn 后复制 Cookie 里的 `wps_sid` 粘贴即用；模型列表由上游 `/models` 动态下发（GLM/DeepSeek/MiniMax/MiMo 等，上下文窗口为上游官方声明）；上游无余额查询接口，积分按每次回答的 `usage.credits` 记账；积分按 WPS 账号计，多份 sid 须来自**多个独立账号**（面板会自动识别并提示） |
 | 华为云果办 OfficeAce | `officeace/*` | 自助 OAuth／从客户端导入 | 华为云 AgentArts 模型网关；两条添加路径：主按钮自助 OAuth（华为云授权码 + PKCE + DPoP，跨平台），次按钮读本机 OfficeAce 桌面端凭据（临时 AK/SK 经 DPAPI 解密，仅 Windows）；对话走不过期的网关 Basic 凭据，每日签到的临时凭据约 2 小时有效并自动续期 |
 | OpenCodeZen | `oczen/*` | 无需账号 | 匿名免费通道，内置 `public` 凭证即可调用 Zen 免费模型 |
 | Kilo | `kilo/*` | 无需账号 | 免密免费池 |
@@ -87,6 +88,7 @@
 | [xxhhlk/loomy2api](https://github.com/xxhhlk/loomy2api) | 讯飞 Loomy 渠道协议逆向（MIT），loomy 渠道依据 |
 | [Q-shuang-dot/officeace2api](https://github.com/Q-shuang-dot/officeace2api) | 华为云果办 OfficeAce 渠道协议依据（MIT）——V4/V11 华为云签名（`src/quota.mjs`）、网关错误码分类（`src/server.mjs`）、`max_tokens` 推理预算常量（`src/config.mjs`）、桌面端凭据发现与 DPAPI/AES-256-GCM 档案解密（`src/discover*.mjs` / `src/dpapi.mjs`）、DPoP + PKCE 自助 OAuth（`src/oauth.mjs`）、refresh_token 一次性轮换（`src/refresh.mjs`）；本项目只取协议与凭据链路，其**批量注册/接码**、Web 控制台、Windows 计划任务看门狗未采用 |
 | [luawei1/cline2api](https://github.com/luawei1/cline2api) | Cline 渠道协议逆向参考（MIT；虽未采用其 WorkOS OAuth 方案，模型/对话协议知识有参考，`recommended-models` free 池机制亦借鉴自其分析） |
+| [DiEr-TouShou/dsh-connect-comate](https://github.com/DiEr-TouShou/dsh-connect-comate) | WPS Comate 渠道协议逆向参考（MIT；虽未采用其 DSH 插件封装与凭据密封存储，comate 网关的 Cookie-only 鉴权形态、思考档位线值、错误文案分类与请求体规范化的知识有参考） |
 | [donghangxunlang-cmd/dsh-attention-health](https://github.com/donghangxunlang-cmd/dsh-attention-health) | 思考链死循环（发癫）检测算法来源——`lib/guard.js` 的四条复读/空转判据与防误杀护栏（本项目只取死循环检测，健康评估/工作交接/会话日志未采用） |
 | [ttales430/wild-work PR #46](https://github.com/rockswang/wild-work/pull/46) | 智谱清言渠道实现（含 CDP 登录编排） |
 
@@ -102,7 +104,7 @@
 2. 放到任意目录，双击启动
 3. 右下角出现 W 图标，**双击托盘图标** → 浏览器打开 Web 管理面板
 4. 在面板中点击「+ WorkBuddyCN」/「+ WorkBuddyAI」/「+ TraeWork」/「+ QoderCN」/「+ QoderCOM」/「+ 千问办公」/「+ 智谱清言」/「+ OfficeAce」添加账号
-   （OpenCodeZen 无需添加账号，启动即已就绪；Cline 无需登录流程，直接粘贴 API Key）
+   （OpenCodeZen 无需添加账号，启动即已就绪；Cline 无需登录流程，直接粘贴 API Key；WPS Comate 无需登录流程，直接粘贴浏览器 Cookie 里的 wps_sid）
 5. 根据下方配置说明接入你的 AI 客户端
 
 ### 托盘菜单

@@ -70,6 +70,11 @@ const (
 	// 登录是服务端中介设备授权流。⚠️ **积分领取依赖阿里云验证码 + headful 浏览器**，
 	// 本仓不实现领取路径（渠道包注释里注明）。
 	ZCode Kind = "zcode"
+	// Comate WPS Comate（comate.wps.cn 网页版模型代理）：粘贴型渠道，凭据是 WPS 账号的
+	// **wps_sid Cookie**（浏览器登录 www.wps.cn 后复制），由面板「粘贴 wps_sid」写入 auths/。
+	// Cookie 不轮换 ⇒ 无 RefreshToken、无保活、无签到；上游无积分查询端点（积分只能从
+	// 逐请求 usage.credits 记账）。模型面绑死上游 /models 的 items 数组原样透传。
+	Comate Kind = "comate"
 )
 
 func (k Kind) String() string { return string(k) }
@@ -84,7 +89,7 @@ func BuiltinKinds() map[string]bool {
 	m := map[string]bool{}
 	for _, k := range []Kind{WorkBuddy, WorkBuddyAI, TraeWork, Qoder, QoderCN, QoderCOM,
 		QwenWork, MonkeyCode, Raccoon, Loomy, TraeCode, Oczen, GLM, Cline, OfficeAce, Kilo, Minimax, LobsterAI,
-		Gemini, CodeArts, ZCode} {
+		Gemini, CodeArts, ZCode, Comate} {
 		m[k.String()] = true
 	}
 	for ns := range ModelNamespaces {
