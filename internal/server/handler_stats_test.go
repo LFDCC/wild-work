@@ -36,10 +36,15 @@ func TestStatWriterFlushCounts(t *testing.T) {
 	}
 }
 
-// TestUsageCredit 单次积分提取：WorkBuddy 系下发 float；缺失/非数值 → 0。
+// TestUsageCredit 单次积分提取：WorkBuddy 系下发 float；comate 下发复数 `credits`；
+// 缺失/非数值 → 0。
 func TestUsageCredit(t *testing.T) {
 	if got := usageCredit(map[string]any{"credit": 12.5}); got != 12.5 {
 		t.Fatalf("应提取 12.5，实际 %v", got)
+	}
+	// comate 的真实形态：usage.credits（复数）—— 不接它则该渠道积分永远不入账（R130）。
+	if got := usageCredit(map[string]any{"credits": 0.01}); got != 0.01 {
+		t.Fatalf("应提取复数 credits 0.01，实际 %v", got)
 	}
 	if got := usageCredit(map[string]any{"prompt_tokens": 10.0}); got != 0 {
 		t.Fatalf("无 credit 字段应 0，实际 %v", got)

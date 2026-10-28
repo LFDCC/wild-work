@@ -61,6 +61,24 @@ const FAKE_STATE = {
       last_checkin_at: "",
       last_checkin_ok: false,
     },
+    // 无积分**但有真实账号**的渠道（R130）：comate 一份 wps_sid = 一个 WPS 账号，
+    // 上游无余额端点 ⇒ credits_na=true，但必须仍能删除/停用/改名
+    // （粘错 sid 时没有删除入口就永久卡死）。
+    {
+      uid: "sid-0123456789abcdef",
+      group: "comate",
+      nickname: "粘错sid的号",
+      credits: 0,
+      expiring_credits: 0,
+      unusable_credits: 0,
+      credits_na: true,
+      cooling: false,
+      until: "",
+      reason: "",
+      disabled: false,
+      last_checkin_at: "",
+      last_checkin_ok: false,
+    },
     // OfficeAce 假数据（场景 1.5）：两张卡片只差「凭据是否缺 refresh_token」这一个字段，
     // 用来验证徽标**由该字段驱动**（而不是恒亮），否则徽标本身就是噪声。
     {
@@ -290,6 +308,29 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
     `实际 ${(cards.match(/需重新登录/g) || []).length} 个`);
 }
 
+// ---- 场景 1.75：无积分**但可删可停**的账号（R130，comate）----
+// 独立缺陷：旧判据 `fixedAcct = noCredits && !isCustomGroup(...)` 把 comate 当成
+// 「固定账号」⇒ 卡片只剩 🔒，无删除/停用/改名入口；而 comate 是真多账号池
+// （一份 wps_sid = 一个 WPS 账号，后端 RemoveAccount/DisableAccount 只硬拒 oczen/kilo）
+// ⇒ 粘错 sid 就永久卡死。这里锁住「无积分≠固定账号」两个维度必须分开。
+{
+  const cardOf = (name) =>
+    cards.split('<div class="acct-card').find((seg) => seg.includes(name)) || "";
+  const comateCard = cardOf("粘错sid的号");
+  check("comate 卡片渲染出来了", comateCard !== "");
+  check("comate 卡片**不得**是固定账号（无 🔒）", !comateCard.includes("固定账号，不可停用/删除"), comateCard.slice(0, 200));
+  check("comate 卡片有删除入口（粘错 sid 能删）", /onclick="removeAcct\('sid-/.test(comateCard), comateCard.slice(0, 400));
+  check("comate 卡片有停用入口", /onclick="toggleDisable\('sid-/.test(comateCard));
+  check("comate 卡片名字可改（非固定账号才可编辑）", /class="acct-name editable"/.test(comateCard));
+  check("comate 无积分 ⇒ 不给「刷新积分」按钮", !comateCard.includes("refreshOne('sid-"));
+  // 反向护栏：虚拟账号（oczen）必须仍然只有 🔒（否则「解耦」就解过头了）
+  const oczenCard = cardOf("匿名");
+  check("oczen 仍是固定账号（🔒 + 无删除入口）",
+    oczenCard.includes("固定账号，不可停用/删除") && !oczenCard.includes("removeAcct('oczen"));
+  check("VIRTUAL_ACCOUNTS 只含 oczen/kilo（与无积分名单是两个维度）",
+    /const VIRTUAL_ACCOUNTS = new Set\(\["oczen", "kilo"\]\)/.test(raw));
+}
+
 // ---- 场景 1.7：「不适用」账号默认收起 + 一键展开（R103，2026-10-19 用户要求）----
 // 需求原话：「把不适用的默认隐藏掉，但是有时候又得看一下」。
 // 难点不在隐藏，而在「默认值 + 可逆 + 状态不丢」三件事同时成立：
@@ -317,7 +358,8 @@ check("非 officeace 账号不带「缺续期凭据」（渠道限定，避免�
   check("收起时汇总条不出现 oczen 的渠道 chip", !/data-wg="oczen"/.test(sumOff), sumOff.slice(0, 200));
   check("收起时汇总条保留「不适用」开关 chip（入口在原地）",
     /data-na-toggle="1"/.test(sumOff) && sumOff.includes("不适用"));
-  check("开关 chip 标出被收起的账号数（1号）", /<span class="cs-num">1号<\/span>/.test(sumOff));
+  // 被收起的账号数 = oczen 匿名 + comate（R130 新增的无积分真实账号），故为 2 号。
+  check("开关 chip 标出被收起的账号数（2号）", /<span class="cs-num">2号<\/span>/.test(sumOff), sumOff.slice(0, 300));
   check("收起态开关不亮 on 高亮", !/cs-chip clickable cs-na on"/.test(sumOff));
 
   // 展开态：chip 回来、开关变 on、账号卡片不再 hidden。

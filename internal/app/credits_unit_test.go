@@ -40,3 +40,16 @@ func TestCreditsUnitTokenChannels(t *testing.T) {
 		}
 	}
 }
+
+// TestCreditsNAComate 守门 comate 的「不适用」口径（R130）：
+// 上游无余额端点（UserResource 恒 0），若不当成 NA，面板会恒显「0 可用积分」，
+// 与「额度真用光了」无法区分。
+func TestCreditsNAComate(t *testing.T) {
+	a := &App{cfg: &config.Config{}}
+	if !a.creditsNAKind(provider.Comate.String()) {
+		t.Error("comate 应标 credits_na（上游无余额端点）")
+	}
+	if got := a.creditsUnit(provider.Comate.String()); got != "" {
+		t.Errorf("comate creditsUnit = %q，期望空串（它不是 token 计量渠道）", got)
+	}
+}

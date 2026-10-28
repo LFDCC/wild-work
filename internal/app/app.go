@@ -393,13 +393,15 @@ func sortChannelsByOrder[T any](items []T, kindOf func(T) provider.Kind) {
 //   - oczen / kilo：免密免费池，根本没有账号/余额概念；
 //   - cline：上游**确无余额端点**（/credits /usage /billing /quota /me 等 12 个候选实测全 404），
 //     属于「查不到」。把这种情况显示成 0 会被误读成「额度已用光」，故同样走 NA。
+//   - comate：上游无余额端点，消耗只体现在逐请求 usage.credits 里（R130），
+//     余额永远查不到 ⇒ 同样走 NA（否则面板恒显「0 可用积分」，与「真的用光了」无法区分）。
 //   - 自定义渠道（R66）：无积分与额度接口，同样走 NA。
 //
 // 注意：**ZCode 不走这里**（尽管它的额度也不是积分）——它有真实的 token 桶要展示，
 // 走 creditsUnit="token" 的「Token 计数」面板，而不是「不适用」（见 creditsUnit）。
 func (a *App) creditsNAKind(group string) bool {
 	if group == provider.Oczen.String() || group == provider.Kilo.String() ||
-		group == provider.Cline.String() {
+		group == provider.Cline.String() || group == provider.Comate.String() {
 		return true
 	}
 	return a.isCustomChannel(group)

@@ -96,7 +96,11 @@ type PlatformRow struct {
 	CreditOut     int64  `json:"credit_out"`
 	CreditExpired int64  `json:"credit_expired"`
 	CreditUsed    int64  `json:"credit_used"`
-	Tokens        int64  `json:"tokens"`
+	// CreditExact 该平台今日**逐请求精确积分**（只取上游 usage 帧带了积分的渠道，
+	// 目前仅 comate，R130）。它与 CreditUsed 是**两个口径**，不可相加：
+	// comate 无余额端点 ⇒ 差值口径恒 0，只能靠这个字段把「今天花了多少」显出来。
+	CreditExact float64 `json:"credit_exact,omitempty"`
+	Tokens      int64   `json:"tokens"`
 	// 三个到期列（2026-10-19 重构口径）：按**精确时刻**判定，边界是**自然日**，
 	// 且**次日 00:00:00 失效算今日**（上游每日类额度的真实形态）。
 	// 逐条目累加，不再只取「每账号最早到期日」——旧口径会把
@@ -706,6 +710,7 @@ var (
 		string(provider.CodeArts):  true,
 		string(provider.Cline):     true, // R59：cline 的模型名是 cline-free/*，漏了它则该渠道 token 不进平台表
 		string(provider.OfficeAce): true,
+		string(provider.Comate):   true, // 漏了它 ⇒ comate 的 token 与请求都不进平台概览表
 	}
 )
 
@@ -799,7 +804,9 @@ func (s *Stats) platformRowsLocked(now time.Time) []PlatformRow {
 	// 今日 Token：模型名带渠道前缀（与 /v1/models 的 id 同构）
 	for name, m := range s.models {
 		if g, ok := channelOfModel(name); ok {
-			rowOf(g).Tokens += m.tokens
+			row := rowOf(g)
+			row.Tokens += m.tokens
+			row.CreditExact += m.credit // 逐请求精确积分（comate 这类无余额端点的渠道唯一可见口径）
 		}
 	}
 	// 今日作废（ledger 周期喂入的全池按渠道值，非账号维度，账号已删也归属渠道）
@@ -817,7 +824,7 @@ func (s *Stats) platformRowsLocked(now time.Time) []PlatformRow {
 	out := make([]PlatformRow, 0, len(agg))
 	for _, r := range agg {
 		if r.Credits <= 0 && r.CreditIn <= 0 && r.CreditOut <= 0 && r.CreditExpired <= 0 &&
-			r.Tokens <= 0 && r.Expire7d <= 0 && r.ExpireToday <= 0 && r.ExpireTomorrow <= 0 {
+			r.CreditExact <= 0 && r.Tokens <= 0 && r.Expire7d <= 0 && r.ExpireToday <= 0 && r.ExpireTomorrow <= 0 {
 			continue
 		}
 		out = append(out, *r)

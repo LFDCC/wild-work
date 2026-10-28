@@ -19,78 +19,91 @@ import (
 // peekStream：窥视首帧，识别 mock 错误帧
 // ---------------------------------------------------------------------------
 
-// peekStream 包裹上游 body：先读首段（至多 64KB）判断是否 mock 错误帧
+// peekStream 包裹上游 body：边读边窥视首段（至多 64KB）判断是否 mock 错误帧
 //（id 前缀 chatcmpl-mock- 或 model=="mock"，见包注释实测事实 2），
 // 命中则转成可分类的 StreamError（模型级 ErrNotFound，不罚整号）；
-// 否则把已读字节与剩余流拼接后放行（外层再包 IdleReader 空闲兜底）。
+// 未命中则把已读字节即时交给调用方（**绝不攒批**）。
 //
 // 为什么必须在流上做：mock 帧的 HTTP 状态是 200、响应头正常，handler 在
 // 读到首帧之前就已把 200 + SSE 头写给客户端 —— 协议上无法在同一请求内
 // 换号重试，唯一可行的补救是把中招模型冷却掉（与 StreamErrorClassifier
 // 的设计动机一致）。
+//
+// ⚠️ 窥视必须是**增量**的（2026-10-28 修正）：旧实现 `io.ReadAll(io.LimitReader(body, 64<<10))`
+// 要读满 64KB 或 EOF 才返回，实测首帧 flush 后上游停 1.5s，客户端首次 Read
+// 也被推迟 1.5024s —— 所有 comate 对话都退化成「正文突然整段出现」；且 IdleReader
+// 包在窥视之后，首字节前的空闲无任何兜底（上游 200 后不发字节会永久挂住）。
+// 现在判定窗口是**首帧边界**（SSE 的 "\n\n"）或 64KB 上限，任一先到即判定，
+// 且底层 body 一开始就包上 IdleReader —— 空闲兜底覆盖「首字节之前」。
 type peekStream struct {
-	pre   *bytes.Reader // 已窥视的前段（含 IdleReader 包装前的原始字节）
-	rest  io.Reader     // 剩余流（IdleReader 包装）
-	model string
+	src     io.ReadCloser // 底层流（已包 IdleReader）
+	pre     []byte        // 已窥视但未交付的字节（每次 Read 交付完即清）
+	head    []byte        // 判定窗口累积（最多 peekLimit）
+	decided bool          // 是否已判定
+	model   string
 }
+
+// peekLimit 判定窗口上限：单帧正常远小于此，64KB 是防「上游不按 SSE 分帧」的兜底。
+const peekLimit = 64 << 10
 
 func newPeekStream(body io.ReadCloser, model string, idle time.Duration) *peekStream {
-	// 先窥视 64KB 判 mock，再决定怎么包。
-	head, err := io.ReadAll(io.LimitReader(body, 64<<10))
-	_ = err // 窥视失败不致命：head 里有多少算多少，剩余流照常透传
-	if isMockFrame(head) {
-		// 读尽剩余（丢弃），提取错误文案。
-		_, _ = io.Copy(io.Discard, body)
-		body.Close()
-		// 提取动作在 Read 时惰性完成 —— 不，这里直接构造错误流。
-		msg := extractMockMsg(head)
-		return &peekStream{
-			pre:   bytes.NewReader(nil),
-			rest:  errReader{&StreamError{Model: model, Code: "MOCK_FRAME", Msg: msg, kind: provider.ErrNotFound}},
-			model: model,
-		}
-	}
-	return &peekStream{
-		pre:   bytes.NewReader(head),
-		rest:  provider.NewIdleReader(body, idle),
-		model: model,
-	}
+	// 底层一开始就包 IdleReader：窥视期间的空闲同样受兜底（旧实现漏了这一段）。
+	return &peekStream{src: provider.NewIdleReader(body, idle), model: model}
 }
 
+// Read 首次调用时边读边判定，之后退化为纯透传。
+// 判定窗口内若识别出 mock 帧，后续所有 Read 都返回 StreamError（已窥视字节**不交付**）。
 func (p *peekStream) Read(b []byte) (int, error) {
-	if p.pre != nil {
-		n, err := p.pre.Read(b)
-		if err == io.EOF {
-			p.pre = nil
-			if p.rest == nil {
-				return n, io.EOF
-			}
-			if n > 0 {
-				return n, nil
-			}
-			return p.rest.Read(b)
+	if !p.decided {
+		if err := p.decide(); err != nil {
+			return 0, err
 		}
-		return n, err
 	}
-	if p.rest == nil {
-		return 0, io.EOF
+	if len(p.pre) > 0 {
+		n := copy(b, p.pre)
+		p.pre = p.pre[n:]
+		return n, nil
 	}
-	return p.rest.Read(b)
+	return p.src.Read(b)
 }
 
-func (p *peekStream) Close() error {
-	if c, ok := p.rest.(io.Closer); ok {
-		if _, isErr := p.rest.(errReader); !isErr {
-			return c.Close()
+// decide 增量读取直到「首帧完整」或 peekLimit，再判 mock。
+// 交付延迟上限 = 首帧到达时刻（不是流结束时刻）。
+func (p *peekStream) decide() error {
+	buf := make([]byte, 4096)
+	for !p.decided {
+		n, err := p.src.Read(buf)
+		if n > 0 {
+			p.head = append(p.head, buf[:n]...)
+			p.pre = append(p.pre, buf[:n]...)
+		}
+		// 判定点：首帧边界（\n\n）已出现，或窗口达到上限，或底层 EOF。
+		if bytes.Contains(p.head, []byte("\n\n")) || len(p.head) >= peekLimit || err != nil {
+			p.decided = true
+			if isMockFrame(p.head) {
+				// 命中 mock：丢弃已窥视字节（不把错误文案当回答吐出去），
+				// 剩余流不再读（Close 会关底层）。
+				msg := extractMockMsg(p.head)
+				p.pre, p.head = nil, nil
+				_ = p.src.Close()
+				return &StreamError{Model: p.model, Code: "MOCK_FRAME", Msg: msg, kind: provider.ErrNotFound}
+			}
+			p.head = nil // 非 mock：判定窗口释放，pre 留给 Read 交付
+		}
+		if err != nil {
+			// 底层错误/EOF：非 mock 时把已读字节先交付（下次 Read 再返回 err）。
+			if len(p.pre) > 0 {
+				return nil
+			}
+			return err
 		}
 	}
 	return nil
 }
 
-// errReader 把固定 error 包装成 io.Reader（mock 帧场景：流一开始就是错误）。
-type errReader struct{ err error }
-
-func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+func (p *peekStream) Close() error {
+	return p.src.Close()
+}
 
 // isMockFrame 判据（实测事实 2）：id 前缀 chatcmpl-mock- 或 model=="mock"。
 // 两个判据都查：上游形态可能变化，双保险。

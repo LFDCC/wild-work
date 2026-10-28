@@ -870,9 +870,14 @@ const NO_CHECKIN_TAG = {
 };
 const noCheckinText = (g) => NO_CHECKIN_TAG[g] || "无签到";
 // 无积分概念的渠道（匿名通道）：积分区域显示「不适用」，并隐藏刷新积分/明细入口。
-// 内建名单只有 oczen/kilo/cline；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
+// 内建名单只有 oczen/kilo/cline/comate；自定义渠道（R66）同样无积分，但渠道名是用户配置的、
 // 运行期可增删，故运行时以后端下发的 custom_channels 动态判定（isCustomGroup）。
 const NO_CREDITS_BUILTIN = new Set(["oczen", "kilo", "cline", "comate"]);
+// 虚拟账号渠道：没有账号概念（oczen 匿名通道 / kilo 免费池），卡片只留 🔒 静态指示，
+// 不可停用/删除/改名（后端 RemoveAccount/DisableAccount 也硬拒）。
+// 与 NO_CREDITS_BUILTIN 是**两个维度**：cline/comate 属「无积分但可删可停」，
+// 故不得用「无积分」推导「固定账号」（R130 修正）。
+const VIRTUAL_ACCOUNTS = new Set(["oczen", "kilo"]);
 // 支持跳转登录编排的渠道：登录态失效时卡片显示 ⟳ 重新登录入口（#134）。
 // officeace 一并纳入（2026-10-17）：它除了「登录态失效」，还有「缺 refresh_token」
 // 这种**不能自愈**的形态（客户端导入只拿得到不过期的网关 Basic），此时同样只能重新登录
@@ -1150,14 +1155,19 @@ function renderAccounts() {
       ? `<span class="icon-op off" title="${esc(noCheckinTitle)}" onclick="return false">✓</span>`
       : `<span class="icon-op" title="签到" onclick="checkin('${a.uid}')">✓</span>`;
 
-    // 无积分账号分两类，处理不同：
-    // - oczen/cline（固定账号）：只保留「不可操作」的静态指示，
+    // 无积分账号分三类，处理不同：
+    // - oczen/kilo（虚拟账号）：根本没有账号概念，只保留「不可操作」的静态指示，
     //   不给刷新积分/停用/删除入口——后端也会硬拒，避免用户白点一次。
-    // - 自定义渠道（R66）：无积分/无签到，但账号可在设置里停用/删除，
-    //   故保留停用/删除/改名入口，只去掉签到/刷新积分两个无意义按钮。
+    // - cline/comate（真实账号但查不到积分）：账号可停用/删除/改名，只去掉
+    //   签到/刷新积分两个无意义按钮（comate 一份 wps_sid = 一个 WPS 账号，粘错就得能删）。
+    // - 自定义渠道（R66）：无积分/无签到，但账号可在设置里停用/删除，同上。
     // 判定优先用后端下发的 credits_na（单一真相），前端名单只作旧载荷的兜底。
     const noCredits = isNoCreditAcct(a) || hasNoCredits(a.group);
-    const fixedAcct = noCredits && !isCustomGroup(a.group);
+    // 「固定账号」只对**没有账号概念**的虚拟条目成立：
+    // 旧实现用 `noCredits && !isCustomGroup(...)`，把 cline/comate 这类「有真实账号但查不到积分」
+    // 的渠道也当成固定账号 ⇒ 卡片只剩 🔒，无法删除/停用/改名，而 comate 是真多账号池
+    // （后端 RemoveAccount/DisableAccount 只硬拒 Oczen/Kilo）⇒ 粘错 sid 就永久卡住（2026-10-28 修正）。
+    const fixedAcct = VIRTUAL_ACCOUNTS.has(a.group);
     // 默认收起的「不适用」卡片：渲染时就带上 hidden（而不是等 applyAcctFilter），
     // 首帧不会先闪一排「不适用」再消失；applyAcctFilter 后续负责保持同步。
     const naHiddenClass = (!showNoCredit && isNoCreditAcct(a)) ? " hidden" : "";
@@ -4416,7 +4426,7 @@ function renderPlatformTable(s) {
       `<span class="st-plat-accts">${fmtCredits(r.accounts)}</span>` +
       stPlatNum("st-plat-credits", r.credits, "分") +
       stPlatNum("st-plat-in", r.credit_in) +
-      stPlatNum("st-plat-out", r.credit_used) +
+      stPlatOut(r) +
       stPlatNum("st-plat-expd", r.credit_expired) +
       stPlatTok(r.tokens) +
       stPlatNum("st-plat-exp", r.expire_today, "分") +
@@ -4488,6 +4498,22 @@ function stPlatNum(cls, amount, suffix) {
   amount = Number(amount) || 0;
   if (amount <= 0) return `<span class="${cls} st-plat-zero">—</span>`;
   return `<span class="${cls}">${fmtCredits(amount)}${suffix || ""}</span>`;
+}
+// 今日消耗单元格：以差值净消耗（credit_used）为主；逐请求精确积分（credit_exact）
+// 是**并列的第二口径**，不是修正值。comate 这类「无余额端点」的渠道差值恒 0，
+// 若只画差值整列恒「—」，用户会以为没用过（R130）。
+// 两口径同时有值时并列展示（`120 (精 3.5)`），与合计行同一写法。
+function stPlatOut(r) {
+  const used = Number(r.credit_used) || 0;
+  const exact = Number(r.credit_exact) || 0;
+  if (used <= 0 && exact <= 0) return `<span class="st-plat-out st-plat-zero">—</span>`;
+  if (exact > 0 && used <= 0) {
+    return `<span class="st-plat-out" title="该渠道无余额端点：只能按每次回答的 usage.credits 逐请求累计（精确口径）">${fmtCreditS(exact)} <span class="st-plat-sub">(精)</span></span>`;
+  }
+  if (exact > 0) {
+    return `<span class="st-plat-out" title="差值净消耗 ${fmtCredits(used)}；逐请求精确 ${fmtCreditS(exact)}">${fmtCredits(used)} <span class="st-plat-sub">(精 ${fmtCreditS(exact)})</span></span>`;
+  }
+  return `<span class="st-plat-out">${fmtCredits(used)}</span>`;
 }
 // Token 单元格：单位走 万/亿，0 同样置灰
 function stPlatTok(amount) {

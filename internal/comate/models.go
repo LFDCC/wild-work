@@ -127,13 +127,26 @@ func enrichModelInfo(mi provider.ModelInfo, m remoteModel) provider.ModelInfo {
 
 // prettifyID 把上游完整 ID 变成可读展示名（仅在上游未给 display_name 时兜底）。
 // 形态：673940725/zhipu/glm-5.3-flash//public → GLM-5.3 Flash。
+//
+// ⚠️ 单段 ID（无 "/"，如 glm-5.3-flash）必须有兜底分支：旧实现直接取
+// `parts[len(parts)-2]` ⇒ 越界 panic（index out of range [-1]），而上游
+// display_name 为空时这条路径是**必走**的 ⇒ 整个 FetchModels 崩。
 func prettifyID(id string) string {
-	parts := strings.Split(id, "/")
-	s := parts[len(parts)-2] // 倒数第二段是短名（最后一段是空的 //public 尾巴）
-	if s == "" && len(parts) >= 2 {
-		s = parts[len(parts)-3]
+	s := id
+	if parts := strings.Split(id, "/"); len(parts) >= 2 {
+		// 末段是可见性标记（//public、/private），先剔掉；再取剩下最后一个非空段。
+		if last := strings.ToLower(strings.TrimSpace(parts[len(parts)-1])); last == "public" || last == "private" {
+			parts = parts[:len(parts)-1]
+		}
+		s = ""
+		for i := len(parts) - 1; i >= 0; i-- {
+			if p := strings.TrimSpace(parts[i]); p != "" {
+				s = p
+				break
+			}
+		}
 	}
-	s = strings.ReplaceAll(s, "-", " ")
+	s = strings.ReplaceAll(strings.TrimSpace(s), "-", " ")
 	if r := []rune(s); len(r) > 0 {
 		return strings.ToUpper(string(r[0])) + string(r[1:])
 	}

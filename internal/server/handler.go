@@ -1150,7 +1150,8 @@ func (h *Handler) serveRotation(
 			if h.ledger != nil {
 				pt, ct, src := usageTokens(usage)
 				h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-					Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+					Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src,
+					Credit: usageCredit(usage)})
 			}
 			// 运行统计：模型维度记账（有 usage 才计，对齐 sidecar 的 u.found 语义）。
 			// 吞吐仅在流式下有意义：genSec = 总耗时 − TTFB；引擎内对 ≤50ms 的样本只计 TTFB。
@@ -1247,7 +1248,8 @@ func (h *Handler) serveRotation(
 			pt, ct, src := usageTokens(u)
 			cu := cacheUsageOf(u)
 			h.ledger.AppendUsage(ledger.UsageEntry{Ch: rt.Kind.String(), UID: acct.UID,
-				Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src})
+				Model: ledgerModelOf(acctModel), PT: pt, CT: ct, CR: cu.cached, CRC: cu.reported, Src: src,
+				Credit: usageCredit(u)})
 		}
 		writeJSON(w, http.StatusOK, resp)
 		// 运行统计：必须在写回之后——此刻 statWriter 才记到首字节，TTFB 为真值；
@@ -1549,11 +1551,19 @@ func (h *Handler) pickModelFallback(rt *Runtime, model string, skipSameChannel b
 	return "", false
 }
 
-// usageCredit 从 usage 对象取上游下发的单次积分（WorkBuddy 系会回；
+// usageCredit 从 usage 对象取上游下发的单次积分（WorkBuddy 系会回 `credit`；
+// comate 回 `credits`（复数，如 0.01）→ 两种都接；
 // TraeWork 系 token_usage 帧无此字段 → 0，引擎侧按渠道余额差值分摊估算）。
+//
+// 为什么必须接复数：`internal/comate/constants.go` 实测上游下发
+// `{"prompt_tokens":…,"completion_tokens":…,"credits":0.01}`，而该渠道
+// **没有余额端点**（UserResource 恒 0）⇒ 只认单数就等于“comate 的积分永远不入账”，
+// README 承诺的“按每次回答的 usage.credits 记账”落空（2026-10-28 修正）。
 func usageCredit(u map[string]any) float64 {
-	if v, ok := u["credit"].(float64); ok {
-		return v
+	for _, k := range []string{"credit", "credits"} {
+		if v, ok := u[k].(float64); ok {
+			return v
+		}
 	}
 	return 0
 }
