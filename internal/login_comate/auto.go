@@ -189,20 +189,29 @@ func AutoLogin(onFound func(sid string) (Result, error)) (*AutoSession, error) {
 	return s, nil
 }
 
-// checkGUI 在拉起浏览器前做一次廉价的桌面环境探测。
+// GUIAvailable 探测本机能否真的拉起浏览器窗口。
 //
-// Linux 上没有 DISPLAY/WAYLAND_DISPLAY（NAS、docker、systemd 服务）时 chromium 会立刻
-// 失败的退出，而 cdp.waitReady 仍要空转 30s 才报错 —— 用户看到的是「点了没反应」。
-// 这里提前给出可读原因，前端据此直接展开「手工方式」。
-func checkGUI() error {
+// 三件事必须讲清楚，否则用户会以为按钮坏了：
+//   1. 浏览器是**在运行 wild-work 的这台机器上**弹出来的，不是在你打开面板的电脑上。
+//      NAS / docker / systemd 服务里跑 wild-work 时，那边没有桌面，窗口永远弹不出来。
+//   2. Linux 上缺 DISPLAY/WAYLAND_DISPLAY 时 chromium 启动即崩，而 cdp.waitReady 仍要空转
+//      30s 才报错 —— 用户看到的就是「点了没反应」。
+//   3. 所以前端拿这个结果决定：能弹窗就以自动为主，弹不出来就直接展开手工方式。
+//
+// 返回 nil 表示可用；否则返回可直接展示给用户的解释。
+func GUIAvailable() error {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
 	if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
 		return nil
 	}
-	return errors.New("当前环境没有图形界面（未检测到 DISPLAY），无法拉起浏览器：请展开「手工方式」粘贴 Cookie")
+	return errors.New("wild-work 运行在没有桌面环境的服务器上（如 NAS），浏览器只会在运行 wild-work 的那台电脑上弹出，" +
+		"不会出现在你现在的电脑上。请用下面的手工方式：复制一次 wps_sid 即可")
 }
+
+// checkGUI 是 GUIAvailable 的旧名，保留给启动路径做前置校验。
+func checkGUI() error { return GUIAvailable() }
 
 // currentSID 读一次当前 profile 的 wps_sid（无则空串）。
 func currentSID(ctx context.Context, browser *cdp.Browser) (string, error) {

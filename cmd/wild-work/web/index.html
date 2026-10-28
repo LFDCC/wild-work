@@ -358,6 +358,20 @@
     <div class="modal-title">添加 WPS Comate 账号</div>
     <div class="modal-body settings-body">
 
+      <!-- 无桌面环境的部署（NAS / docker / systemd）：浏览器只会开在跑 wild-work 的
+           那台机器上，所以「一键登录」在这里物理上不可能成功。与其让用户点完按钮只看到
+           一句报错，不如进来就把结论与手工入口摆出来。 -->
+      <div class="glm-warn hidden" id="comateNoGui">
+        <div class="glm-warn-title">💡 这台机器没有桌面，浏览器不会弹出来</div>
+        <ol>
+          <li>「一键登录」是让 <b>运行 wild-work 的那台电脑</b> 打开浏览器窗口；你现在用的是网页面板，
+              窗口不会出现在你面前的电脑上，所以点了看不到反应。</li>
+          <li>请用下面的 <b>手工方式</b>：在你自己的浏览器里登录 WPS，复制一次 <code>wps_sid</code>
+              粘进来即可，约 30 秒，之后一直有效。</li>
+        </ol>
+        <div class="hint" id="comateNoGuiHint"></div>
+      </div>
+
       <!-- 自动路径：CDP 捕获 wps_sid（普通用户走这条，不用碰 F12） -->
       <div class="cfg-section" id="comateAuto">
         <div class="cfg-heading">自动登录（推荐）</div>
@@ -387,7 +401,7 @@
       <!-- 手工兜底：没有桌面环境（如 NAS 无显示器）或自动拉浏览器失败时使用 -->
       <div class="cfg-section">
         <div class="cfg-heading">
-          <span class="btn small" id="btnComateToggleManual" style="cursor:pointer">手工方式（自动失败时用）</span>
+          <span class="btn small" id="btnComateToggleManual" style="cursor:pointer">手工方式（复制 wps_sid）</span>
         </div>
         <div id="comateManual" class="hidden">
           <ol class="glm-steps">

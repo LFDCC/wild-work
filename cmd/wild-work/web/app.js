@@ -1889,7 +1889,7 @@ function promptLogin(channel) {
     if (channel === "comate") {
       // Comate 有 CDP 自动登录（拉浏览器 → 登录 → 捕获 wps_sid），默认走这条；
       // 弹层里仍保留手工粘贴入口，供无桌面环境（NAS）或自动失败时兜底。
-      startComateLogin();
+      openComateDialog();
       return;
     }
     $("clineKeyInput").value = "";
@@ -2228,6 +2228,31 @@ function cancelGLMLogin() {
 // 关键：捕获到 Cookie ≠ 登录完成（未登录态也会有预登录 Cookie），判据是后端校验
 // （GET /models，零 token）通过；校验不过继续等，故这里只认 status=success。
 let comatePoll = null;
+
+// 打开 Comate 添加弹层：先问后端「这台机器能不能真弹出浏览器」。
+// 无桌面环境（NAS/docker/systemd）时自动登录物理上不可能成功 —— 浏览器只会开在跑
+// wild-work 的那台机器上，而不是用户当前打开面板的电脑上。此时直接隐藏自动区、
+// 展开手工区并说明原因，比让用户点完按钮只看到一句报错要好。
+async function openComateDialog() {
+  $("comateErr").textContent = "";
+  $("comateStatus").textContent = "点下面的按钮开始，无需手动复制 Cookie。";
+  $("comateManual").classList.add("hidden");
+  $("comateNoGui").classList.add("hidden");
+  $("comateAuto").classList.remove("hidden");
+  $("comateSidInput").value = "";
+  $("comateOverlay").classList.remove("hidden");
+  try {
+    const st = await api("/api/login/comate_auto_status");
+    if (st && st.gui === false) {
+      $("comateAuto").classList.add("hidden");
+      $("comateNoGui").classList.remove("hidden");
+      $("comateNoGuiHint").textContent = st.gui_hint || "";
+      $("comateManual").classList.remove("hidden");
+      stopComatePoll();
+      api("/api/login/comate_auto_cancel", {}).catch(() => {});
+    }
+  } catch (e) { /* 状态查询失败不影响手工路径 */ }
+}
 
 function startComateLogin() {
   $("comateErr").textContent = "";
@@ -3584,7 +3609,7 @@ function bind() {
   $("btnAddCline").onclick = () => promptLogin("cline");
   $("btnClineSubmit").onclick = submitClineKey;
   $("btnClineCancel").onclick = () => $("clineOverlay").classList.add("hidden");
-  $("btnAddComate").onclick = () => startComateLogin();
+  $("btnAddComate").onclick = () => openComateDialog();
   $("btnComateAuto").onclick = startComateLogin;
   $("btnComateSubmit").onclick = submitComateSID;
   $("btnComateCancel").onclick = cancelComateLogin;

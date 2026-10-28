@@ -1740,16 +1740,27 @@ func (a *App) StartComateAutoLogin() error {
 }
 
 // GetComateAutoLoginStatus 查询自动登录状态。
-// 返回 status（idle/pending/success/failed/cancelled）、错误信息与成功时的 uid。
+// 返回 status（idle/pending/success/failed/cancelled）、错误信息与成功时的 uid；
+// 另带 gui/gui_hint：本机能不能真的弹出浏览器窗口（false 时前端直接展开手工方式，
+// 不让用户点完按钮只看到一句报错）。
 func (a *App) GetComateAutoLoginStatus() map[string]any {
+	out := map[string]any{}
+	if guiErr := logincomate.GUIAvailable(); guiErr != nil {
+		out["gui"] = false
+		out["gui_hint"] = guiErr.Error()
+	} else {
+		out["gui"] = true
+	}
+
 	a.muComateLogin.Lock()
 	sess := a.comateLogin
 	a.muComateLogin.Unlock()
 	if sess == nil {
-		return map[string]any{"status": "idle"}
+		out["status"] = "idle"
+		return out
 	}
 	status, err := sess.Status()
-	out := map[string]any{"status": status}
+	out["status"] = status
 	if err != nil {
 		out["error"] = err.Error()
 	}

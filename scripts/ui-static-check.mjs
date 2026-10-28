@@ -743,6 +743,22 @@ check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[
   check("模型表空态占位行跨 7 列", document.getElementById("tblModelstbody").innerHTML.includes('colspan="7"'));
 }
 
+// ---- 场景 1.8：Comate 自动登录在无桌面部署下的降级（R131 追加）----
+// 起因：分支构建部署到 NAS 后，用户点「一键登录」什么也没发生。原因是 CDP 拉起的是
+// **运行 wild-work 那台机器**的浏览器，而 NAS 没有桌面。修法不是把报错写漂亮，而是
+// 打开弹层时就问后端「能不能弹窗」，不能就直说原因并展开手工区。
+{
+  const html = readFileSync(new URL("../cmd/wild-work/web/index.html", import.meta.url), "utf8");
+  check("弹层带「没有桌面」的说明块", html.includes('id="comateNoGui"'), html.length);
+  check("说明块里预留后端原因占位", html.includes('id="comateNoGuiHint"'));
+  check("打开弹层先查 gui 能力，而不是直接发启动请求",
+    /async function openComateDialog/.test(raw) && /gui === false/.test(raw));
+  check("openComateDialog 走了状态接口", /openComateDialog[\s\S]{0,900}\/api\/login\/comate_auto_status/.test(raw));
+  check("无 GUI 时顺带清掉可能残留的会话", /openComateDialog[\s\S]{0,1200}comate_auto_cancel/.test(raw));
+  check("手工入口默认展开的条件挂在 gui=false 分支上",
+    /gui === false[\s\S]{0,500}comateManual"\)\.classList\.remove\(\"hidden\"\)/.test(raw));
+}
+
 // ---- 输出 ----
 let failed = 0;
 for (const [name, pass, extra] of results) {
