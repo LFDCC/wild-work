@@ -249,6 +249,78 @@ func (s *session) storedMsgID() string {
 	return s.msgid
 }
 
+// ===========================================================================
+// 跨会话的 msgid 留存
+// ===========================================================================
+
+// sentMsg 是一条「已经真实下发过」的验证码记录。
+//
+// 为什么 msgid 不能只存在 session 里：session 的寿命由**面板流程**决定
+// （取消 / 重新发起 / 4 分钟 flowTTL 都会换掉或销毁它），而短信里的验证码
+// 有效期是 smsCodeTTLSeconds（5 分钟）且**已经躺在用户手机上**。
+// 两者一旦错位，用户拿着有效验证码提交，服务端却答「本机没有查到下发记录」——
+// 用户唯一能做的就是再发一条短信，而这还会撞上上游的发送间隔限制。
+type sentMsg struct {
+	msgid string
+	at    time.Time
+}
+
+var (
+	sentMu sync.Mutex
+	// sentByPhone 以**完整手机号**为键（不是脱敏值：脱敏后不同号码会撞键）。
+	// 只在内存里，进程退出即丢；键与值是「已发出的验证码关联信息」，不是凭据。
+	sentByPhone = map[string]sentMsg{}
+)
+
+// rememberMsgID 记下一次成功下发，供后续会话（同一手机号）提交时补用。
+func rememberMsgID(phone, msgid string) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" || msgid == "" {
+		return
+	}
+	now := time.Now()
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	// 顺手清理过期项：条目量极小（一次登录一条），不必另起清理协程。
+	for k, v := range sentByPhone {
+		if now.Sub(v.at) > smsCodeTTLSeconds*time.Second {
+			delete(sentByPhone, k)
+		}
+	}
+	sentByPhone[phone] = sentMsg{msgid: msgid, at: now}
+}
+
+// lookupMsgID 取该手机号最近一次**仍在有效期内**的下发记录。
+func lookupMsgID(phone string) string {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return ""
+	}
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	v, ok := sentByPhone[phone]
+	if !ok {
+		return ""
+	}
+	// 验证码过期后再拿去登录，上游只会回「验证码已失效」，不如让用户重新获取。
+	if time.Since(v.at) > smsCodeTTLSeconds*time.Second {
+		delete(sentByPhone, phone)
+		return ""
+	}
+	return v.msgid
+}
+
+// forgetMsgID 丢掉该手机号的记录（上游判定 msgid 无效时调用：留着只会重复失败）。
+func forgetMsgID(phone string) {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return
+	}
+	sentMu.Lock()
+	defer sentMu.Unlock()
+	delete(sentByPhone, phone)
+}
+
 // isCurrent 判断本会话是否仍是全局进行中的那一条。
 //
 // 面板 Poll 拿到失败/取消后会 Shutdown()（cur 置 nil），但**引导页标签页还开着**。
