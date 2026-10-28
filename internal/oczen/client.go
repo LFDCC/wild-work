@@ -129,7 +129,8 @@ var descendingTimePartPattern = regexp.MustCompile(`^[0-9a-f]{9}f[c-f][0-9a-f]$`
 // canonicalSessionID 把任意会话种子映射成 OpenCode 官方格式
 // ses_<12位小写hex><14位Base62>。已是官方客户端签发的 descending 编码则原样
 // 返回（保住 prompt cache 亲和）；其余（含旧实现的摘要段与升序 ID）重编码成
-// 该精确布局。上游自 2026-09-16 起对非该形状/编码的会话头一律回 403 FreeTierError。
+// 该精确布局。上游自 2026-09-16 起对非该形状/编码的会话头一律回 403 FreeTierError；
+// 自 2026-10-25 起还校验时间戳合理性（超窗回 429 FreeUsageLimitError，见 descendingTimePart）。
 func canonicalSessionID(signal string) string {
 	// 官方形状：ses_ + 12 位小写 hex（时间戳）+ 14 位 Base62
 	if len(signal) == 4+12+14 && strings.HasPrefix(signal, "ses_") {
@@ -155,18 +156,26 @@ func canonicalSessionID(signal string) string {
 		// 形状对但编码外来（旧摘要段 / 升序 ID）：落到下面确定性重编码。
 	}
 	sum := sha256.Sum256([]byte("ses\x00" + signal))
-	timePart := descendingTimePart(sum[:6])
+	timePart := descendingTimePart(time.Now(), sum[:6])
 	n := new(big.Int).SetBytes(sum[6:16])
 	return "ses_" + timePart + base62Fixed(n, 14)
 }
 
-// descendingTimePart 把哈希前 6 字节渲染成官方客户端 Identifier.descending()
-// 的布局：36 位时间戳移位进 48 位字的高位，OR 上 counter=1，再按位取反，
-// 故末三位恒为 ffe。
-func descendingTimePart(hash []byte) string {
-	current := (uint64(hash[0])<<28 | uint64(hash[1])<<20 | uint64(hash[2])<<12 |
-		uint64(hash[3])<<4 | uint64(hash[4])>>4) << 12
-	current |= 1
+// sessionTimestampWindow 限制合成会话时间戳回落的窗口：上游接受距今约一年内的日期
+// （两个方向），一个月已留足时钟偏移与长驻进程的余量，同时绝不逼近边界。
+const sessionTimestampWindow = 30 * 24 * time.Hour
+
+// descendingTimePart 以官方客户端 Identifier.descending() 的布局渲染落在合理窗口内的时间戳：
+// 36 位时间戳移位进 48 位字的高位，OR 上 counter=1，再按位取反，故末三位恒为 ffe。
+// 时间戳锚定今日 UTC 零点、再减哈希派生的偏移（≤sessionTimestampWindow）：上游自
+// 2026-10-25 起对解码后超出约一年窗口的时间戳回 429 FreeUsageLimitError（与真实
+// 配额耗尽同一报文），哈希直派生会落在 1970 年代而必被拒（参考实现 opencode2api
+// 9533101 同款修法）。哈希只挑窗口内偏移、不提供日期；同一信号一天内稳定（对话亲和）。
+func descendingTimePart(now time.Time, hash []byte) string {
+	window := uint64(sessionTimestampWindow / time.Millisecond)
+	offset := (uint64(hash[0])<<24 | uint64(hash[1])<<16 | uint64(hash[2])<<8 | uint64(hash[3])) % window
+	base := now.UTC().Truncate(24 * time.Hour).Add(-time.Duration(offset) * time.Millisecond)
+	current := uint64(base.UnixMilli())<<12 | 1
 	inverted := ^current & 0xFFFFFFFFFFFF
 	return hex.EncodeToString([]byte{
 		byte(inverted >> 40), byte(inverted >> 32), byte(inverted >> 24),

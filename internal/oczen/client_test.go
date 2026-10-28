@@ -1,12 +1,14 @@
 package oczen
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wild-work/internal/provider"
 )
@@ -35,6 +37,40 @@ func TestCanonicalSessionID(t *testing.T) {
 	// 不同种子应不同
 	if other := canonicalSessionID("another conversation"); other == got {
 		t.Fatalf("不同种子撞同一 session: %q", got)
+	}
+}
+
+// TestDescendingTimePartInsideUpstreamWindow 上游自 2026-10-25 起对 ses_ 时间戳做
+// 合理性校验：解码后超出约一年窗口回 429 FreeUsageLimitError（与真实配额耗尽同一报文，
+// 参考实现 opencode2api 9533101）。哈希直派生（旧实现）落在 1970 年代必被拒；
+// 修法锚定今日 UTC 零点 − 哈希偏移(≤30天)，解码日期（mod 2^36 口径）必须落在今日附近。
+func TestDescendingTimePartInsideUpstreamWindow(t *testing.T) {
+	id := canonicalSessionID("hello conversation")
+	var inv uint64
+	b, _ := hex.DecodeString(id[4:16])
+	for _, c := range b {
+		inv = inv<<8 | uint64(c)
+	}
+	cur := ^inv & 0xFFFFFFFFFFFF
+	decodedMS := int64(cur >> 12) // 官方解码口径：36 位 ms（mod 2^36 回绕语义）
+	const wrap = int64(1) << 36
+	nowMS := time.Now().UnixMilli() % wrap
+	if nowMS < 0 {
+		nowMS += wrap
+	}
+	if decodedMS < 0 {
+		decodedMS += wrap
+	}
+	diff := decodedMS - nowMS
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > int64(31*24*time.Hour/time.Millisecond) {
+		t.Fatalf("解码日期距今日 %.1f 天，超出上游接受窗口（哈希直派生会落在 1970 年代必被拒）", float64(diff)/86400000)
+	}
+	// 哈希只挑偏移、不提供日期：同一种子同一天内稳定（对话亲和）
+	if id2 := canonicalSessionID("hello conversation"); id2 != id {
+		t.Fatalf("不稳定: %q != %q", id2, id)
 	}
 }
 
@@ -81,7 +117,7 @@ func TestCanonicalSessionIDReencodesForeignEncodings(t *testing.T) {
 
 // TestDescendingTimePartLayout 低 12 位恒为 0xFFE（counter 1 取反）。
 func TestDescendingTimePartLayout(t *testing.T) {
-	got := descendingTimePart([]byte{0, 0, 0, 0, 1, 0xFF})
+	got := descendingTimePart(time.Now(), []byte{0, 0, 0, 0, 1, 0xFF})
 	if got[9:] != "ffe" {
 		t.Fatalf("descendingTimePart = %q, 末三位应为 ffe", got)
 	}
