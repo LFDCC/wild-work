@@ -757,6 +757,11 @@ check("用量卡片 5 列同行（.usage-cards repeat(5)）", /\.usage-cards \{[
   check("无 GUI 时顺带清掉可能残留的会话", /openComateDialog[\s\S]{0,1200}comate_auto_cancel/.test(raw));
   check("手工入口默认展开的条件挂在 gui=false 分支上",
     /gui === false[\s\S]{0,500}comateManual"\)\.classList\.remove\(\"hidden\"\)/.test(raw));
+  // 用户对照点：Loomy 的登录是「前端 window.open 一个引导页」，窗口落在用户屏幕上，
+  // 远程访问也能看见。Comate 在无桌面部署下必须做到同样的可见反馈，否则又是「点了没反应」。
+  check("无桌面时给出「在你浏览器打开登录页」的入口", html.includes('id="btnComateOpenLogin"'));
+  check("该入口由前端 window.open 打开，而不是服务端拉浏览器",
+    /btnComateOpenLogin"\)\.onclick[\s\S]{0,240}window\.open\(/.test(raw));
 }
 
 // ---- 输出 ----

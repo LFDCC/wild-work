@@ -358,18 +358,23 @@
     <div class="modal-title">添加 WPS Comate 账号</div>
     <div class="modal-body settings-body">
 
-      <!-- 无桌面环境的部署（NAS / docker / systemd）：浏览器只会开在跑 wild-work 的
-           那台机器上，所以「一键登录」在这里物理上不可能成功。与其让用户点完按钮只看到
-           一句报错，不如进来就把结论与手工入口摆出来。 -->
+      <!-- 无桌面环境的部署（NAS / docker / systemd）：CDP 只能拉起**服务器那台机器**的
+           浏览器，那里没有桌面，窗口永远出不来。这里换成 Loomy 引导页的思路 ——
+           窗口由前端 window.open 打开，落在用户自己的屏幕上，所以远程访问也能看见。 -->
       <div class="glm-warn hidden" id="comateNoGui">
-        <div class="glm-warn-title">💡 这台机器没有桌面，浏览器不会弹出来</div>
+        <div class="glm-warn-title">💡 登录页会开在<b>你自己的浏览器</b>里</div>
         <ol>
-          <li>「一键登录」是让 <b>运行 wild-work 的那台电脑</b> 打开浏览器窗口；你现在用的是网页面板，
-              窗口不会出现在你面前的电脑上，所以点了看不到反应。</li>
-          <li>请用下面的 <b>手工方式</b>：在你自己的浏览器里登录 WPS，复制一次 <code>wps_sid</code>
-              粘进来即可，约 30 秒，之后一直有效。</li>
+          <li>点下面的按钮，用你当前这台电脑的浏览器新开一个 WPS 登录页（不会有服务器端弹窗）。</li>
+          <li>登录完成后把 <code>wps_sid</code> 复制回来粘贴到下面，约 30 秒，之后长期有效。</li>
         </ol>
-        <div class="hint" id="comateNoGuiHint"></div>
+        <div class="hint" style="margin-top:6px">
+          <button class="btn small primary" id="btnComateOpenLogin">打开 WPS 登录页</button>
+        </div>
+        <div class="hint" id="comateNoGuiHint" style="margin-top:6px"></div>
+        <div class="hint" style="margin-top:4px">
+          为什么还要复制一次：浏览器不允许别的网站读取 WPS 域下的登录 Cookie（同源策略）。
+          只有让「服务器自己开浏览器」才能自动读，而那需要一台有桌面的机器。
+        </div>
       </div>
 
       <!-- 自动路径：CDP 捕获 wps_sid（普通用户走这条，不用碰 F12） -->
@@ -407,8 +412,9 @@
           <ol class="glm-steps">
             <li>在自己浏览器登录 <a href="https://www.wps.cn/" target="_blank" rel="noopener noreferrer">www.wps.cn</a>（WPS 账号即可，无需会员）。</li>
             <li>按 <code>F12</code> → <code>Application</code> → <code>Cookies</code> → <code>https://www.wps.cn</code>。</li>
-            <li>找到 <code>wps_sid</code>，复制它的<b>值</b>粘贴到下面。
-                整行 Cookie（如 <code>wps_sid=V02S…;</code>）或整段 Cookie 请求头也能直接用，工具会自动取出其中的值。</li>
+            <li>找到 <code>wps_sid</code>，复制它的<b>值</b>粘贴到下面。懒得找的话，整行复制
+                （<code>wps_sid=V02S…;</code>）或整段 Cookie 请求头（<code>F12</code> → <code>Network</code> →
+                任一 wps.cn 请求 → 复制 <code>Cookie</code> 头）也行，工具会自动取出其中的值。</li>
           </ol>
           <input id="comateSidInput" class="input grow" spellcheck="false" autocomplete="off"
                  placeholder="粘贴 wps_sid 的值，或整段 Cookie" style="width:100%;font-family:ui-monospace,monospace">

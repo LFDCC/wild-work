@@ -3614,6 +3614,10 @@ function bind() {
   $("btnComateSubmit").onclick = submitComateSID;
   $("btnComateCancel").onclick = cancelComateLogin;
   $("btnComateToggleManual").onclick = () => $("comateManual").classList.toggle("hidden");
+  // 无桌面部署下唯一能真正「弹出窗口」的办法：由前端 window.open 在用户自己的浏览器里
+  // 开登录页（与 Loomy 引导页同一思路）。服务器端 CDP 拉浏览器在没有桌面的机器上不可能成功。
+  $("btnComateOpenLogin").onclick = () =>
+    window.open("https://account.wps.cn/login", "_blank", "noopener,noreferrer");
   $("btnAddOfficeAce").onclick = () => promptLogin("officeace");
   $("btnAddMiniMax").onclick = () => promptLogin("minimax");
   $("btnAddLobsterAI").onclick = () => promptLogin("lobsterai");
