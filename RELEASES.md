@@ -3721,11 +3721,12 @@ DeepSeek Harness 的 system prompt 正是以这句开头，于是经本代理转
 
 # wild-work v2.10.0
 
-本版新增 **WPS Comate 内建渠道**（第 22 条，R130），并把**模型降级链**从「只能指定真模型」扩展成
-「可以起别名」（R129）；另有粘性路由阈值可配（R127）、Loomy 短信发码判据修正（R128）、
-ZCode 出站身份结构修正（R125）与 OpenCodeZen 会话时间戳修正（R126）。
+本版新增 **WPS Comate 内建渠道**（第 22 条，R130）—— 支持**扫码登录**（无桌面 NAS 也能用）、
+本机浏览器接管与手工粘贴三条路（R131/R132），并修好「一个坏账号拖垮整条渠道模型面」（R133）；
+同时把**模型降级链**从「只能指定真模型」扩展成「可以起别名」（R129），另有粘性路由阈值可配（R127）、
+Loomy 短信发码判据修正（R128）、ZCode 出站身份结构修正（R125）与 OpenCodeZen 会话时间戳修正（R126）。
 
-对应决议 **R125 / R126 / R127 / R128 / R129 / R130**。
+对应决议 **R125 / R126 / R127 / R128 / R129 / R130 / R131 / R132 / R133**。
 
 > ⚠️ **自动更新仍不在本版**。PR #188 的更新引擎留在 `feat/auto-update` 分支，主线不含任何
 > 自替换二进制的代码；相关工作会在后续版本的架构重构里一并重做（签名校验、重启器与启动期自愈、
@@ -3735,11 +3736,21 @@ ZCode 出站身份结构修正（R125）与 OpenCodeZen 会话时间戳修正（
 
 WPS 网页版的模型代理（`comate.wps.cn`），模型面覆盖 GLM / DeepSeek / MiniMax / MiMo 等。
 
-**接入方式：粘贴 `wps_sid` Cookie。** 浏览器登录 www.wps.cn 后，从开发者工具里复制 Cookie 的
-`wps_sid` 值，粘到面板「＋ WPS Comate」即可。不涉及 OAuth、不需要回调地址、不用本机装客户端。
+**接入方式：三条路，同一份凭据纪律（R131/R132）。** 三条路都以「上游 `/models` 校验通过」为
+完成判据 —— **Cookie 出现 ≠ 登录完成**：WPS 未登录态也会下发预登录 Cookie，上游会回 401 `not_login`。
+
+1. **扫码登录（默认，NAS/docker 可用）**：点「＋ WPS Comate」面板里直接出二维码，用手机 WPS 扫码
+   确认即可。二维码由**服务端**向 `qr.wps.cn` 申请、Cookie 也在服务端换取 —— 全程不需要桌面、
+   不需要浏览器。二维码 110 秒自动换新，整体 5 分钟超时。
+2. **本机浏览器接管（有桌面的本机部署）**：在 `config.json` 填
+   `"login": { "comate_browser_cdp": "http://127.0.0.1:9222" }`，并用 `--remote-debugging-port=9222`
+   启动浏览器（Chrome 136+ 默认 profile 拒开调试口，需换 profile）。之后面板会显示该入口：它在你
+   **正在用的**浏览器里开一个 WPS 登录页，登录完自动读 `wps_sid`；结束后只断开连接，**不会关掉你的浏览器**。
+3. **手工粘贴（兜底）**：展开「手工方式」粘贴。裸值、`wps_sid=...`、整段 Cookie 请求头、DevTools
+   表格整行都能直接吃（`comate.NormalizeSID` 自己剥噪声）。
 
 - 凭据**只走 Cookie 头**，不发 `Authorization`（上游对 Bearer 返回 401）；`wps_sid` 无 refresh
-  机制，有效期到了重新粘一次。
+  机制，有效期到了重新走一遍上面任一条路（账号卡片上没有 ⟳ 重登按钮）。
 - **模型目录由上游 `/models` 动态下发**，本仓不改名、不过滤、不编造：上下文窗口、是否支持图片、
   是否支持思考与档位全部按上游声明填（拿不到就留空，不猜）。
 - **上游没有余额查询接口** ⇒ 账号卡片的积分显示「不适用」，消耗改由每次回答的 `usage.credits`
@@ -3749,6 +3760,12 @@ WPS 网页版的模型代理（`comate.wps.cn`），模型面覆盖 GLM / DeepSe
 - 多账号池：一份 `wps_sid` 一个账号，可停用、可删除、可改名（粘错了直接删）。
 - 上游偶发用「mock 帧」（`chatcmpl-mock-*` / `"model":"mock"`）顶替真实回答表示该模型暂不可用。
   这类帧必须在**写出任何字节之前**识别出来，归为「模型级不可用」——换号重试，不罚账号。
+- **模型目录不再被一个坏账号拖垮（R133）**：以前拉 `/models` 只抽一个账号，抽中未开通/失效的号
+  就把整条渠道的模型列表清空并写 5 分钟负缓存（实测加第二个 WPS 账号后 `comate/*` 9 个模型瞬间变 0）。
+  现在改为有界换号重试（最多试 3 个），全部失败才认渠道级失败。
+- **账号加完立刻可见（R131）**：以前「不适用」账号（无余额端点的渠道）默认收起，你亲手粘凭据加的
+  comate / cline / 自定义渠道账号也会被当噪声隐藏，看起来像「没加成功」。现在收起只针对工具自带的
+  虚拟账号（oczen / kilo）。
 
 ## 🔀 降级链别名：给主力模型起个短名（R129）
 
@@ -3817,12 +3834,14 @@ WPS 网页版的模型代理（`comate.wps.cn`），模型面覆盖 GLM / DeepSe
 - `ui-static-check` 的配色断言改为从 `CH_CLASS` 派生数量，不再写死「21 个」——新增渠道时标签
   不会与实际脱节。
 - README 移除交流群小节与二维码图片。
+- `config.example.json` 补 `login.comate_browser_cdp`；`docs/接口参考.md` 补 8 个 comate 登录端点；
+  README 常见问题新增「WPS Comate 怎么登录？没有桌面的 NAS 能用吗？」三条路径说明。
 
 ## 🙏 致谢
 
 | 贡献者 | 内容 |
 |---|---|
-| [@happyshushushu](https://github.com/happyshushushu) | PR #192：WPS Comate 内建渠道（R130） |
+| [@happyshushushu](https://github.com/happyshushushu) | PR #192：WPS Comate 内建渠道（R130）；PR #195：扫码登录/本机浏览器接管/目录换号重试（R131–R133） |
 | [@jswh](https://github.com/jswh) | PR #193：模型降级链别名（R129） |
 | [@wzwjustdoit](https://github.com/wzwjustdoit) | PR #191：粘性路由轮换阈值可配（R127） |
 | [@ezjbc](https://github.com/ezjbc) | PR #194：Loomy 短信发码按响应证据判成败（R128） |
