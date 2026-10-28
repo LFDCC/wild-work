@@ -345,10 +345,10 @@ func exchangeSession(ctx context.Context, cli *http.Client, resp qrLoginResp) (s
 
 	if resp.KsoAuthCode != "" {
 		body, _ := json.Marshal(map[string]any{
-			"grant_type":      "authorization_code",
-			"code":            resp.KsoAuthCode,
-			"login_scenario":  "qr",
-			"is_append":       true,
+			"grant_type":     "authorization_code",
+			"code":           resp.KsoAuthCode,
+			"login_scenario": "qr",
+			"is_append":      true,
 		})
 		if _, err := postJSON(jctx, cli, accountBase+"/passport/secure/api/grant_token", body); err != nil {
 			log.Printf("comate 扫码登录：grant_token 失败: %v", err)

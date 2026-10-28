@@ -26,7 +26,8 @@
     "sticky_max_requests": 50
   },
   "login": {
-    "lobsterai_callback_port": 0
+    "lobsterai_callback_port": 0,
+    "comate_browser_cdp": ""
   },
   "compat": {
     "default_channel": "workbuddy",
