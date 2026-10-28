@@ -3718,3 +3718,111 @@ DeepSeek Harness 的 system prompt 正是以这句开头，于是经本代理转
 | [@xxhhlk](https://github.com/xxhhlk) | PR #187：签到时间改就地时间选择器 |
 | [@zrtzrt](https://github.com/zrtzrt)（代码作者 reno） | PR #189：`/v1/models` 输出 `supported_parameters` 与 `reasoning.mandatory`（R124） |
 
+
+# wild-work v2.10.0
+
+本版新增 **WPS Comate 内建渠道**（第 22 条，R130），并把**模型降级链**从「只能指定真模型」扩展成
+「可以起别名」（R129）；另有粘性路由阈值可配（R127）、Loomy 短信发码判据修正（R128）、
+ZCode 出站身份结构修正（R125）与 OpenCodeZen 会话时间戳修正（R126）。
+
+对应决议 **R125 / R126 / R127 / R128 / R129 / R130**。
+
+> ⚠️ **自动更新仍不在本版**。PR #188 的更新引擎留在 `feat/auto-update` 分支，主线不含任何
+> 自替换二进制的代码；相关工作会在后续版本的架构重构里一并重做（签名校验、重启器与启动期自愈、
+> 预发布过滤、断点续传与空闲看门狗）。
+
+## 🆕 新渠道：WPS Comate（R130）
+
+WPS 网页版的模型代理（`comate.wps.cn`），模型面覆盖 GLM / DeepSeek / MiniMax / MiMo 等。
+
+**接入方式：粘贴 `wps_sid` Cookie。** 浏览器登录 www.wps.cn 后，从开发者工具里复制 Cookie 的
+`wps_sid` 值，粘到面板「＋ WPS Comate」即可。不涉及 OAuth、不需要回调地址、不用本机装客户端。
+
+- 凭据**只走 Cookie 头**，不发 `Authorization`（上游对 Bearer 返回 401）；`wps_sid` 无 refresh
+  机制，有效期到了重新粘一次。
+- **模型目录由上游 `/models` 动态下发**，本仓不改名、不过滤、不编造：上下文窗口、是否支持图片、
+  是否支持思考与档位全部按上游声明填（拿不到就留空，不猜）。
+- **上游没有余额查询接口** ⇒ 账号卡片的积分显示「不适用」，消耗改由每次回答的 `usage.credits`
+  逐请求累计（平台表「今日消耗」列以 `(精)` 标注）。
+- 积分按 WPS 账号计：多份 `wps_sid` 必须来自**多个独立账号**，同账号多份共享一份额度（面板会
+  自动识别并提示）。
+- 多账号池：一份 `wps_sid` 一个账号，可停用、可删除、可改名（粘错了直接删）。
+- 上游偶发用「mock 帧」（`chatcmpl-mock-*` / `"model":"mock"`）顶替真实回答表示该模型暂不可用。
+  这类帧必须在**写出任何字节之前**识别出来，归为「模型级不可用」——换号重试，不罚账号。
+
+## 🔀 降级链别名：给主力模型起个短名（R129）
+
+模型降级链原来只能填真模型 ID。现在每条规则可以带一个 `name`：
+
+```json
+"model_fallback": [
+  { "name": "gpt", "from": "workbuddy/deepseek-v4.1-flash", "to": "qodercn/glm-5.3-flash" }
+]
+```
+
+之后客户端直接请求 `gpt` 就等于请求 `workbuddy/deepseek-v4.1-flash`，降级链照旧生效。
+
+**别名是入口的糖，不是备胎链的一环**（三条硬边界）：
+
+1. 别名只解析「进来的模型名」，**不参与** `from → to` 的备胎顺序，也不会被当作降级目标。
+2. 别名**不**在用量榜/费率页独立成行——账本记的是主力模型的真名，否则同一个模型会被拆成两行。
+3. 别名不继承、不宣告任何能力：`/v1/models` 里它单独列一条并标 `alias`，能力字段照主力模型给。
+
+解析优先级：**降级链别名 → `model_map` 精确 → 通配 → `default_channel`**。
+别名在 Chat / Responses / Anthropic 三个接口都生效，`/v1/messages/count_tokens` 同样认。
+名字里不许出现 `/`、空白、逗号等会与模型前缀路由冲突的字符（保存时直接拒）。
+
+## ⚙️ 粘性路由阈值可配（R127）
+
+「连续成功多少次才换号」以前是写死的 50。现在可以在 `config.json` 里调：
+
+```json
+"server": { "sticky_max_requests": 50 }
+```
+
+- 调小（10~20）⇒ 消耗摊到更多账号上，但会话缓存命中率下降。
+- 调大（200+）⇒ 缓存亲和更好，代价是更长时间钉在同一个号上。
+- 填 `0` 或负数会记一条 `WARN config: server.sticky_max_requests=… invalid, fallback=50` 并回退默认值，
+  **不会改写你的配置文件**。
+- 改完需要重启；已经在跑的链路会按旧阈值跑到耗尽。
+- 它只决定**什么时候**换号，不决定**换给谁**——选号仍是「最早到期优先」（R112），不受影响。
+
+## 🔧 修正
+
+**Loomy 短信登录：按「响应里有没有 msgid」判成败（R128，PR #194）**
+旧实现拿上游信封的 `code` 去比对白名单（只认 `"0"` 和空串），而上游实际下发的是 `"000000"`
+（`desc="成功"`）⇒ 真实的「验证码已下发」被判定为失败，用户收到短信却提交不了。现在不再猜
+`code` 的取值约定，只看**响应里有没有 `msgid`**（顶层或 `data` 里都认，`msgid`/`msgId`/
+`msg_id` 等几种写法都收）。取不到才报错，并打出 `data_keys` / `raw_keys` 便于对照上游变化。
+同时 `msgid` 在服务端留一份，刷新页面、换会话都不会丢。
+
+**ZCode：出站 `system` 必须恰好 3 块（R125）**
+上游 Start Plan 准入按「三个 system 块」判定，多开第 4 块会被 `405 {"code":3012}` 拒掉。
+调用方自带的 system 现在合并进第 3 块末尾（缓存断点仍只打最后一块），并补上 `metadata.user_id`
+（`device_id` 与请求头 `X-Device-Mid` 同值）。
+
+**OpenCodeZen：`ses_` 里的时间戳必须落在近 30 天内（R126）**
+上游从 2026-10-25 起校验会话 ID 的时间合理性，超窗直接回 `429 FreeUsageLimitError`——和真实配额
+耗尽同一个报文，极难排障。旧实现从哈希直派生时间戳，落在 1970 年代，必然被拒。现在哈希只在
+「今日往前 30 天」的窗口内挑偏移，锚定 UTC 零点（同种子一天内稳定，保住 prompt cache 亲和）。
+
+**小浣熊测试夹具改为相对今日生成**
+`internal/raccoon` 的流水夹具写死了 2026-10-20 抓包的日期，到期时间一过，「在效发放」恒为 0，
+整个包变红。现在按 `time.Now()` 相对生成，不再有保质期。
+
+## 📚 文档
+
+- README / AGENTS.md / 配色规范统一渠道口径：`provider.BuiltinKinds()` 共 **22 条内建渠道**，
+  其中旧 Qoder 仅保留路由、界面已下线 ⇒ 面板可添加 **21 条**（以前三处分别写 20/21/22）。
+- `ui-static-check` 的配色断言改为从 `CH_CLASS` 派生数量，不再写死「21 个」——新增渠道时标签
+  不会与实际脱节。
+- README 移除交流群小节与二维码图片。
+
+## 🙏 致谢
+
+| 贡献者 | 内容 |
+|---|---|
+| [@happyshushushu](https://github.com/happyshushushu) | PR #192：WPS Comate 内建渠道（R130） |
+| [@jswh](https://github.com/jswh) | PR #193：模型降级链别名（R129） |
+| [@wzwjustdoit](https://github.com/wzwjustdoit) | PR #191：粘性路由轮换阈值可配（R127） |
+| [@ezjbc](https://github.com/ezjbc) | PR #194：Loomy 短信发码按响应证据判成败（R128） |

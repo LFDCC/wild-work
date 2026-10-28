@@ -326,7 +326,7 @@
 
 **面板区块与 API 全量清单**见 [`docs/接口参考.md`](docs/接口参考.md)。
 
-### 渠道清单（20 条内建 + 自定义）
+### 渠道清单（22 条内建，其中旧 Qoder 仅保留路由 + 自定义）
 
 WorkBuddyCN（`workbuddy/*`）、WorkBuddyAI（`workbuddyai/*`）、TraeWork（`traework/*`）、
 TraeCode（`traecode/*`）、QoderCN（`qodercn/*`）、QoderCOM（`qodercom/*`）、
@@ -335,9 +335,9 @@ Loomy（`loomy/*`）、智谱清言（`glm/*`）、OpenCodeZen（`oczen/*`，匿
 Kilo（`kilo/*`，免密免费池、无账号）、MiniMax Code（`minimax/*`，设备码授权）、
 LobsterAI（`lobsterai/*`，本机回调授权）、ZCode（`zcode/*`，设备授权；积分领取依赖网页验证码，本工具不自动领取）、
 Gemini（`gemini/*`，本机回调授权）、CodeArts（`codearts/*`，PKCE 授权）、
-Cline（`cline-free/*`）、华为云果办 OfficeAce（`officeace/*`）；
+Cline（`cline-free/*`）、华为云果办 OfficeAce（`officeace/*`）、WPS Comate（`comate/*`，粘贴 `wps_sid` Cookie）；
 另有用户自定义 OpenAI 兼容渠道（`custom_channels`，R66）。
-旧 Qoder（`qoder/*`）已从界面下线，路由保留。
+旧 Qoder（`qoder/*`）已从界面下线，路由保留（`provider.BuiltinKinds()` 仍计入 ⇒ 22 条内建、可添加 21 条）。
 
 **新增渠道步骤**：① `internal/<channel>/` 实现 `provider.Upstream`；
 ② `internal/auth` 加 `Load<Channel>Dir()`（注意 glob 边界：`qoder*.json` 会吞 `qodercn-`/`qodercom-`）；

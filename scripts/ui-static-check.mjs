@@ -1798,8 +1798,9 @@ for (const [label, re] of uniq) {
     raw.includes("for (let l = 42; l >= 22; l--)") &&
     raw.includes("1.05 / (relLuminance(hex) + 0.05) >= 4.5"));
 
-  // 内建 21 色两两可辨：完全同色会导致图上两条线重叠（原 zcode/qwenwork、
+  // 内建渠道色两两可辨：完全同色会导致图上两条线重叠（原 zcode/qwenwork、
   // gemini/wb、codearts/qoder、lobsterai/loomy 四对完全相同）
+  // 数量从 CH_CLASS 派生，不写死：写死时新增渠道（comate 是第 22 个）会让标签与实际脱节。
   const hexOf = {};
   for (const c of CH) {
     const m = css.match(new RegExp(`--ch-${c}:\\s*(#[0-9a-fA-F]{6})`));
@@ -1810,7 +1811,9 @@ for (const [label, re] of uniq) {
   for (let i = 0; i < names.length; i++)
     for (let j = i + 1; j < names.length; j++)
       if (hexOf[names[i]] === hexOf[names[j]]) dup.push(`${names[i]}=${names[j]}`);
-  checkPal("21 个内建渠道色两两不同（无完全同色）", dup.length === 0, dup.join(", "));
+  // 计数只报内建（hexOf 含 custom 兜底色，它不是一条渠道）
+  const builtinColorCount = Object.keys(hexOf).filter((k) => k !== "custom").length;
+  checkPal(`${builtinColorCount} 个内建渠道色两两不同（无完全同色）`, dup.length === 0, dup.join(", "));
 
   checkPal("渠道按钮配色全部走 var(--ch-*)，CSS 里无硬编码 hex",
     !/\.btn\.primary\.alt[^{]*\{[^}]*#[0-9a-fA-F]{6}/.test(css));
@@ -1904,7 +1907,7 @@ for (const [label, re] of uniq) {
       !/const CH_NAMES\b/.test(raw) && /const chLabel = \(k\) => CH_LABEL\[k\]/.test(raw));
 
     // 5) 配色规范文档必须与 CSS 实际色值一致（R99 文档化）。
-    // 为什么需要：docs/渠道配色规范.md 把 21 个色值当「规范基线」公布，一旦有人改
+    // 为什么需要：docs/渠道配色规范.md 把全部内建色值当「规范基线」公布，一旦有人改
     // CSS 不改文档，文档就变成错误信息（比没文档更糟——后来者会按错的基线去改）。
     // 这里逐行比对 §3 色值表的 hex 与 :root 的 --ch-*，任一不一致即失败。
     {
